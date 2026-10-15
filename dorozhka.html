@@ -607,6 +607,21 @@ function suggestSets(c,p,ignore){const dur=DUR[clientType(c)],days=workHours().m
     const times=common.length?cb.map(()=>near(common)):free.map(near);
     sets.push({slots:Object.fromEntries(cb.map((d,i)=>[d,fromMin(times[i])])),same:common.length?1:0,spread:spread>1?1:0,dist:times.reduce((a,x)=>a+Math.abs(x-pref),0)/k})}
   return sets.sort((a,b)=>b.same-a.same||b.spread-a.spread||a.dist-b.dist).slice(0,5)}
+/* Everyone at a session warned they would miss it: nothing is charged, so the series gets one more session at its end —
+   a make-up on the client's next plan day that is free. Undoing the mark removes it while it is still unmarked.
+   Group sessions are left alone: the group keeps its own schedule. The same rule is in shared/schedule.mjs (syncMakeup) for the bot. */
+function syncMakeup(s){if(s.groupId||s.kind==='trial'||s.cancelled)return null;
+  const ids=s.clientIds.filter(id=>s.att?.[id]||!isPausedC(client(id),s.date)),want=ids.length>0&&ids.every(id=>s.att[id]==='excused'),ext=S.sessions.find(x=>x.extOf===s.id);
+  if(!want){if(ext&&!Object.keys(ext.att||{}).length)S.sessions=S.sessions.filter(x=>x!==ext);return null}
+  if(ext)return ext;
+  const key=[...s.clientIds].sort().join(','),last=S.sessions.filter(x=>!x.groupId&&!x.cancelled&&[...x.clientIds].sort().join(',')===key).reduce((a,x)=>x.date>a?x.date:a,s.date);
+  const pl=client(s.clientIds[0])?.plan,slots=pl?.slots&&Object.keys(pl.slots).length?pl.slots:pl?.days?Object.fromEntries(pl.days.map(d=>[d,pl.time])):{[wd(pdate(s.date))]:s.start};
+  const g=gapMin(),busy=(date,start)=>{const a=toMin(start),b=a+s.dur;return S.sessions.some(x=>x.date===date&&!x.cancelled&&a<toMin(x.start)+x.dur+g&&b>toMin(x.start)-g)};
+  let pick=null,first=null;for(let i=1;i<=120&&!pick;i++){const d=addDays(pdate(last),i),day=iso(d),start=slots[wd(d)];
+    if(!start||(S.vacations||[]).some(v=>v.from<=day&&day<=v.to))continue;first=first||{day,start};if(!busy(day,start))pick={day,start}}
+  pick=pick||first;if(!pick)return null;
+  const add={id:uid('s'),date:pick.day,start:pick.start,dur:s.dur,type:s.type,kind:'makeup',groupId:null,clientIds:[...s.clientIds],place:s.place||'',att:{},log:'',next:'',cancelled:false,extOf:s.id};
+  S.sessions.push(add);S.sessions.sort(byStart);return add}
 function planConflicts(c,p,ignore){const dur=DUR[clientType(c)];return planSlots(p.from,p.slots,p.n).map(x=>({...x,s:clash(x.date,x.time,dur,ignore)})).filter(x=>x.s)}
 function planWarn(c,p){const cf=planConflicts(c,p,planIgnore(c.id));if(!cf.length)return '';
   return `Занято: ${cf.slice(0,3).map(x=>`${DAY[wd(pdate(x.date))]} ${fdateS(x.date)} ${x.time} — ${esc(shortTitle(x.s))}`).join('; ')}${cf.length>3?` и ещё ${cf.length-3}`:''}. Поставить всё равно можно.`}
@@ -910,7 +925,9 @@ function sessionSheet(id){
   <div class="sheet-b">
     <div class="row"><span class="chip t-${s.type}">${TYPES[s.type].label}${s.type==='split'?' · '+people(heads(s)):''}</span>${s.kind?`<span class="chip k-${s.kind}">${SKIND[s.kind]}</span>`:''}<span class="chip st-${st}">${ST[st]}</span></div>
     ${pn?`<div class="prev-note"><span class="eyebrow">Заметка с прошлого раза · ${fdateS(pn.date)}</span><span>${esc(pn.next)}</span></div>`:''}
-    <div class="blockt"><div class="row" style="justify-content:space-between"><h3>Посещение</h3><span class="small muted">Списывается, если был или не предупредил</span></div><ul class="att">${rows}</ul></div>
+    <div class="blockt"><div class="row" style="justify-content:space-between"><h3>Посещение</h3><span class="small muted">Списывается, если был или не предупредил</span></div><ul class="att">${rows}</ul>
+      ${(x=>x?`<div class="match"><span>Предупредили — занятие продлено: отработка ${DAYF[wd(pdate(x.date))]}, ${fdateS(x.date)}, ${x.start}</span><button class="btn sm" data-act="open-session" data-id="${x.id}">Открыть</button></div>`:'')(S.sessions.find(x=>x.extOf===s.id))}
+      ${(x=>x?`<p class="small muted">Это отработка за пропуск ${fdateS(x.date)}, ${x.start}.</p>`:'')(s.extOf&&S.sessions.find(x=>x.id===s.extOf))}</div>
     <div class="blockt"><label class="f" for="s-log">Как прошло занятие</label>
       <div class="qchips">${chips.map(c=>`<button type="button" data-act="chip" data-sid="${s.id}" data-t="${esc(c)}">+ ${esc(c)}</button>`).join('')}</div>
       <textarea class="inp" id="s-log" data-sfield="log" data-sid="${s.id}" placeholder="Что делали, как реагировал, что получилось">${esc(s.log)}</textarea></div>
@@ -1228,8 +1245,12 @@ document.addEventListener('click',e=>{
   if(a==='cfilter'){UI.cFilter=t.dataset.k;return render()}
   if(a==='period'){UI.period=t.dataset.k;return render()}
   if(a==='rtype'){UI.rType=t.dataset.k;return render()}
-  if(a==='att'){const s=S.sessions.find(x=>x.id===t.dataset.sid);const v=t.dataset.v;if(s.att[t.dataset.cid]===v)delete s.att[t.dataset.cid];else s.att[t.dataset.cid]=v;persist();render();return sessionSheet(s.id)}
-  if(a==='att-all'){const s=S.sessions.find(x=>x.id===t.dataset.sid);s.clientIds.forEach(c=>s.att[c]='present');persist();render();toast('Отмечено','Все были на занятии');return sessionSheet(s.id)}
+  if(a==='att'){const s=S.sessions.find(x=>x.id===t.dataset.sid);const v=t.dataset.v,had=S.sessions.find(x=>x.extOf===s.id);if(s.att[t.dataset.cid]===v)delete s.att[t.dataset.cid];else s.att[t.dataset.cid]=v;
+    const ext=syncMakeup(s);persist();render();
+    if(ext&&!had)toast('Занятие продлено',`Пропуск с предупреждением: отработка ${DAYF[wd(pdate(ext.date))]}, ${fdateS(ext.date)}, ${ext.start}`);
+    else if(had&&!S.sessions.includes(had))toast('Отработка убрана',`${fdateS(had.date)}, ${had.start} — отметка изменилась`);
+    return sessionSheet(s.id)}
+  if(a==='att-all'){const s=S.sessions.find(x=>x.id===t.dataset.sid);s.clientIds.forEach(c=>s.att[c]='present');syncMakeup(s);persist();render();toast('Отмечено','Все были на занятии');return sessionSheet(s.id)}
   if(a==='chip'){const s=S.sessions.find(x=>x.id===t.dataset.sid);const ta=document.getElementById('s-log');s.log=(ta.value.trim()?ta.value.trim().replace(/[.,;]?$/,'')+', ':'')+t.dataset.t.toLowerCase().replace(/^./,m=>ta.value.trim()?m:m.toUpperCase());ta.value=s.log;persist();return}
   if(a==='cancel-session'){const s=S.sessions.find(x=>x.id===t.dataset.id);s.cancelled=!s.cancelled;persist();render();toast(s.cancelled?'Занятие отменено':'Занятие возвращено',s.cancelled?'С абонемента ничего не списано':'');return sessionSheet(s.id)}
   if(a==='del-session'||a==='del-client'||a==='del-payment'){

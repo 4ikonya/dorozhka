@@ -102,6 +102,8 @@ export function attendanceView(S, s) {
     ];
   });
   const done = ids.every((id) => s.att?.[id]);
+  const ext = S.sessions.find((x) => x.extOf === s.id);
+  if (ext) { const d = dateOf(ext.date); lines.push(`Предупредили — добавлена отработка: ${DAYS[d.getUTCDay()]}, ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}, ${ext.start}`); }
   return {
     text: `${done ? 'Отмечено' : 'Отметьте посещение'}: ${s.start} — ${titleOf(S, s)}\n${lines.join('\n')}`,
     reply_markup: { inline_keyboard: keyboard },
@@ -114,7 +116,53 @@ export function applyAttendance(S, data) {
   if (kind !== 'a' || !s || !s.clientIds.includes(cid) || !ATT_CODE[code]) return null;
   s.att = s.att || {};
   if (s.att[cid] === ATT_CODE[code]) delete s.att[cid]; else s.att[cid] = ATT_CODE[code];
+  syncMakeup(S, s);
   return s;
+}
+
+const toMin = (t) => { const [h, m] = String(t).split(':').map(Number); return h * 60 + (m || 0); };
+const dateOf = (iso) => { const [y, m, d] = iso.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d)); };
+const weekday = (d) => (d.getUTCDay() + 6) % 7; // 0 = Monday, as in the app
+/**
+ * Everyone at a session warned they would miss it: nothing is charged, so the series gets one more session at its end —
+ * a make-up on the client's next plan day that is free. Undoing the mark removes it while it is still unmarked.
+ * Group sessions are left alone: the group keeps its own schedule. Mirrors syncMakeup in dorozhka.html.
+ */
+export function syncMakeup(S, s) {
+  if (s.groupId || s.kind === 'trial' || s.cancelled) return null;
+  const ids = s.clientIds.filter((id) => s.att?.[id] || !isPaused(S.clients.find((c) => c.id === id), s.date));
+  const want = ids.length > 0 && ids.every((id) => s.att?.[id] === 'excused');
+  const ext = S.sessions.find((x) => x.extOf === s.id);
+  if (!want) {
+    if (ext && !Object.keys(ext.att || {}).length) S.sessions = S.sessions.filter((x) => x !== ext);
+    return null;
+  }
+  if (ext) return ext;
+  const key = [...s.clientIds].sort().join(',');
+  const last = S.sessions.filter((x) => !x.groupId && !x.cancelled && [...x.clientIds].sort().join(',') === key)
+    .reduce((a, x) => (x.date > a ? x.date : a), s.date);
+  const pl = S.clients.find((c) => c.id === s.clientIds[0])?.plan;
+  const slots = pl?.slots && Object.keys(pl.slots).length ? pl.slots
+    : pl?.days ? Object.fromEntries(pl.days.map((d) => [d, pl.time])) : { [weekday(dateOf(s.date))]: s.start };
+  const gap = Math.max(0, +(S.settings?.breakMin ?? 10) || 0), dur = durOf(s);
+  const busy = (date, start) => {
+    const a = toMin(start), b = a + dur;
+    return S.sessions.some((x) => x.date === date && !x.cancelled && a < toMin(x.start) + durOf(x) + gap && b > toMin(x.start) - gap);
+  };
+  let pick = null, first = null;
+  for (let i = 1; i <= 120 && !pick; i++) {
+    const d = new Date(dateOf(last).getTime() + i * 864e5), day = dayKey(d), start = slots[weekday(d)];
+    if (!start || onVacation(S, day)) continue;
+    first = first || { day, start };
+    if (!busy(day, start)) pick = { day, start };
+  }
+  pick = pick || first;
+  if (!pick) return null;
+  const add = { id: 's' + Math.random().toString(36).slice(2, 9), date: pick.day, start: pick.start, dur, type: s.type, kind: 'makeup',
+    groupId: null, clientIds: [...s.clientIds], place: s.place || '', att: {}, log: '', next: '', cancelled: false, extOf: s.id };
+  S.sessions.push(add);
+  S.sessions.sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start));
+  return add;
 }
 
 /** Messages that are due now and not yet sent, each with the key that marks it as sent. */
