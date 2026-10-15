@@ -4,7 +4,7 @@
 //   POST /telegram/login/start|poll — the login screen: sign in by confirming in the coach's bot
 //   POST /telegram/status|connect|test|disconnect — the signed-in coach from the app
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
-import { applyAttendance, attendanceView, dayText, dueMessages, nextText, photoForms, receiptsReport, receiptsSoFar, startText, textChunks, wallNow } from '../_shared/schedule.mjs';
+import { applyAttendance, attendanceView, dayText, dueMessages, forgetPhotos, nextText, photoForms, receiptsReport, receiptsSoFar, startText, textChunks, wallNow } from '../_shared/schedule.mjs';
 
 const SB_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -30,13 +30,27 @@ async function tg(token: string, method: string, body: Record<string, unknown> =
   return out.result;
 }
 // Long text in parts, then receipt photos as albums of up to 10. A failed album is logged, the rest still go out.
-async function sendReport(token: string, chatId: number, m: { text: string; photos?: { img: string; caption: string }[] }) {
+// Returns the ids of payments whose photo reached the chat.
+async function sendReport(token: string, chatId: number, m: { text: string; photos?: { id: string; img: string; caption: string }[] }) {
   for (const part of textChunks(m.text)) await tg(token, 'sendMessage', { chat_id: chatId, text: part });
-  for (const fd of photoForms(chatId, m.photos || [])) {
+  const sent: string[] = [];
+  for (const { fd, ids } of photoForms(chatId, m.photos || [])) {
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMediaGroup`, { method: 'POST', body: fd });
     const out = await res.json().catch(() => ({ ok: false, description: 'Telegram ответил непонятно' }));
-    if (!out.ok) console.error(`telegram receipts album: ${out.description}`);
+    if (out.ok) sent.push(...ids); else console.error(`telegram receipts album: ${out.description}`);
   }
+  return sent;
+}
+// Drops photos that are now in the chat. Version-checked like every other write, retried if the app saved meanwhile.
+async function dropSentPhotos(owner: string, ids: string[], day: string) {
+  for (let i = 0; i < 5 && ids.length; i++) {
+    const { data: row } = await admin.from('app_state').select('data, version').eq('owner', owner).maybeSingle();
+    if (!row?.data || !forgetPhotos(row.data, ids, day)) return;
+    const { data: saved } = await admin.from('app_state').update({ data: row.data, version: row.version + 1, updated_at: new Date().toISOString() })
+      .eq('owner', owner).eq('version', row.version).select('version');
+    if (saved?.length) return;
+  }
+  console.error('telegram receipts: photos sent but not removed (state kept changing)');
 }
 async function stateOf(owner: string) {
   const { data } = await admin.from('app_state').select('data').eq('owner', owner).maybeSingle();
@@ -59,7 +73,10 @@ async function tick() {
       const { error } = await admin.from('sent_reminders').insert({ owner: l.owner, key: m.key });
       if (error) continue;
       try {
-        if (m.photos) await sendReport(l.token, l.chat_id as number, m);
+        if (m.photos) {
+          const ids = await sendReport(l.token, l.chat_id as number, m);
+          if (m.purge) await dropSentPhotos(l.owner, ids, m.key.slice(9) + '-20');
+        }
         else await tg(l.token, 'sendMessage', { chat_id: l.chat_id, text: m.text, ...(m.reply_markup ? { reply_markup: m.reply_markup } : {}) });
         sent++;
       } catch (e) {

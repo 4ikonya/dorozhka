@@ -181,18 +181,22 @@ export function receiptsSoFar(wnow) {
 /**
  * Every payment dated within [from, to]: a text list with the total, and the receipt photos (JPEG/PNG/WebP only;
  * payments without a photo are listed as «без фото»). Photos keep the list number in the caption.
+ * withOlder also sends photos of earlier payments that are still stored (never sent before, or a failed album).
  */
-export function receiptsReport(S, from, to) {
+export function receiptsReport(S, from, to, withOlder = false) {
   const pays = (S.payments || []).filter((p) => p.date >= from && p.date <= to).sort((a, b) => a.date.localeCompare(b.date));
   const name = (id) => S.clients.find((c) => c.id === id)?.name || 'Без клиента';
   const head = `Чеки с ${shortDate(from)} по ${shortDate(to)}`;
-  if (!pays.length) return { text: `${head}\nОплат за этот период нет.`, photos: [] };
   const photo = (p) => /^data:image\/(jpeg|png|webp);base64,/.test(p.img || '');
+  const older = withOlder ? (S.payments || []).filter((p) => p.date < from && photo(p)).sort((a, b) => a.date.localeCompare(b.date)) : [];
+  const olderPhotos = older.map((p) => ({ id: p.id, img: p.img, caption: `Раньше · ${shortDate(p.date)} · ${name(p.clientId)}${p.with ? ` и ${name(p.with)}` : ''} · ${money(p.amount)} · ${p.method || '—'}` }));
+  const olderLine = older.length ? `\n\nЕщё ${older.length} фото чеков за прошлые месяцы — тоже присылаю.` : '';
+  if (!pays.length) return { text: `${head}\nОплат за этот период нет.${olderLine}`, photos: olderPhotos };
   const lines = pays.map((p, i) => `${i + 1}. ${shortDate(p.date)} · ${name(p.clientId)}${p.with ? ` и ${name(p.with)}` : ''} · ${money(p.amount)} · ${p.method || '—'} · ${p.sessions} зан.${photo(p) ? '' : ' · без фото'}`);
   const total = pays.reduce((t, p) => t + (+p.amount || 0), 0), withPhoto = pays.filter(photo).length;
   return {
-    text: `${head}\nВсего ${pays.length} ${pays.length % 10 === 1 && pays.length % 100 !== 11 ? 'оплата' : [2, 3, 4].includes(pays.length % 10) && ![12, 13, 14].includes(pays.length % 100) ? 'оплаты' : 'оплат'} на ${money(total)}, фото чеков: ${withPhoto}\n\n${lines.join('\n')}`,
-    photos: pays.map((p, i) => ({ p, i })).filter(({ p }) => photo(p)).map(({ p, i }) => ({ img: p.img, caption: lines[i] })),
+    text: `${head}\nВсего ${pays.length} ${pays.length % 10 === 1 && pays.length % 100 !== 11 ? 'оплата' : [2, 3, 4].includes(pays.length % 10) && ![12, 13, 14].includes(pays.length % 100) ? 'оплаты' : 'оплат'} на ${money(total)}, фото чеков: ${withPhoto}\n\n${lines.join('\n')}${olderLine}`,
+    photos: [...olderPhotos, ...pays.map((p, i) => ({ p, i })).filter(({ p }) => photo(p)).map(({ p, i }) => ({ id: p.id, img: p.img, caption: lines[i] }))],
   };
 }
 /** Telegram limits: 4096 characters per message, 10 photos per album. */
@@ -205,7 +209,7 @@ export function textChunks(text, max = 4000) {
   if (cur) out.push(cur);
   return out;
 }
-/** sendMediaGroup bodies (FormData, at most 10 photos each) for the receipt photos. */
+/** sendMediaGroup bodies (FormData, at most 10 photos each) with the payment ids they carry. */
 export function photoForms(chatId, photos) {
   const forms = [];
   for (let i = 0; i < photos.length; i += 10) {
@@ -219,9 +223,19 @@ export function photoForms(chatId, photos) {
     });
     fd.append('chat_id', String(chatId));
     fd.append('media', JSON.stringify(media));
-    forms.push(fd);
+    forms.push({ fd, ids: photos.slice(i, i + 10).map((ph) => ph.id) });
   }
   return forms;
+}
+
+/**
+ * After the monthly report the photos live in the Telegram chat, so the service drops them to keep the data small.
+ * The payment itself stays; imgSentAt tells the app where the photo went. Returns how many photos were dropped.
+ */
+export function forgetPhotos(S, ids, day) {
+  let n = 0;
+  for (const p of S.payments || []) if (ids.includes(p.id) && p.img) { p.img = null; p.imgSentAt = day; n++; }
+  return n;
 }
 
 /** Messages that are due now and not yet sent, each with the key that marks it as sent. */
@@ -247,7 +261,7 @@ export function dueMessages(S, wnow, wasSent) {
   const rk = `receipts:${today.slice(0, 7)}`;
   if (S.settings?.monthlyReceipts !== false && (wnow.getUTCDate() > RECEIPT_DAY || hm(wnow) >= '09:00') && wnow.getUTCDate() >= RECEIPT_DAY && wnow.getUTCDate() <= RECEIPT_DAY + 2 && !wasSent(rk)) {
     const { from, to } = receiptsPeriod(wnow);
-    out.push({ key: rk, ...receiptsReport(S, from, to) });
+    out.push({ key: rk, purge: true, ...receiptsReport(S, from, to, true) });
   }
   if (onVacation(S, today)) return out;
   for (const s of S.sessions) {

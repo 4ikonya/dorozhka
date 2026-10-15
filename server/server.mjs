@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { DEFAULT_TZ, applyAttendance, attendanceView, dueMessages, dayText, nextText, photoForms, receiptsReport, receiptsSoFar, startText, textChunks, wallNow } from '../shared/schedule.mjs';
+import { DEFAULT_TZ, applyAttendance, attendanceView, dueMessages, dayText, forgetPhotos, nextText, photoForms, receiptsReport, receiptsSoFar, startText, textChunks, wallNow } from '../shared/schedule.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT) || 4318;
@@ -73,10 +73,17 @@ const unmarkSent = (key) => db.prepare('DELETE FROM sent WHERE key = ?').run(key
 async function sendReport(m) {
   const { token, chat_id } = tgRow();
   for (const part of textChunks(m.text)) await tg('sendMessage', { chat_id, text: part });
-  for (const fd of photoForms(chat_id, m.photos || [])) {
+  const sent = [];
+  for (const { fd, ids } of photoForms(chat_id, m.photos || [])) {
     const json = await (await fetch(`${TG_API}/bot${token}/sendMediaGroup`, { method: 'POST', body: fd })).json().catch(() => ({ ok: false }));
-    if (!json.ok) console.error(`[telegram] receipts album: ${json.description || 'ошибка'}`);
+    if (json.ok) sent.push(...ids); else console.error(`[telegram] receipts album: ${json.description || 'ошибка'}`);
   }
+  return sent;
+}
+// After the monthly report the photos are in the chat: drop them from the data (the payment stays).
+function dropSentPhotos(ids, day) {
+  const { version, state } = readState();
+  if (state && forgetPhotos(state, ids, day)) writeState(state, version);
 }
 async function deliver(key, text, extra = {}) {
   markSent(key);
@@ -91,7 +98,7 @@ async function tick() {
   for (const m of dueMessages(S, wnow(S), wasSent)) {
     if (!m.photos) { await deliver(m.key, m.text, m.reply_markup ? { reply_markup: m.reply_markup } : {}); continue; }
     markSent(m.key);
-    try { await sendReport(m); console.log(`[telegram] ${m.key}`); } catch (e) { unmarkSent(m.key); console.error(`[telegram] ${m.key}: ${e.message}`); }
+    try { const ids = await sendReport(m); if (m.purge) dropSentPhotos(ids, m.key.slice(9) + '-20'); console.log(`[telegram] ${m.key}`); } catch (e) { unmarkSent(m.key); console.error(`[telegram] ${m.key}: ${e.message}`); }
   }
 }
 // A press on "был / не предупредил / предупредил" under an attendance message.
