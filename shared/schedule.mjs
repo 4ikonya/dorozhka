@@ -8,11 +8,13 @@ const DAYS = ['воскресенье', 'понедельник', 'вторни�
 const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
 const pad = (n) => String(n).padStart(2, '0');
 
+export const DEFAULT_TZ = 'Asia/Almaty';
 export function wallNow(now, tz) {
   if (!tz) return new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes(), now.getSeconds()));
-  const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
-    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
-  }).formatToParts(now).map((x) => [x.type, x.value]));
+  let fmt;
+  try { fmt = new Intl.DateTimeFormat('en-GB', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }); }
+  catch { return tz === DEFAULT_TZ ? wallNow(now) : wallNow(now, DEFAULT_TZ); }
+  const p = Object.fromEntries(fmt.formatToParts(now).map((x) => [x.type, x.value]));
   return new Date(Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second));
 }
 export const startOf = (s) => {
@@ -21,6 +23,8 @@ export const startOf = (s) => {
   return new Date(Date.UTC(y, m - 1, d, h, mi));
 };
 export const dayKey = (d) => `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+export const durOf = (s) => s.dur || (s.type === 'baby' ? 30 : 45);
+const endOf = (s) => startOf(s).getTime() + durOf(s) * 60000;
 const hm = (d) => `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
 const byStart = (a, b) => startOf(a) - startOf(b);
 
@@ -73,7 +77,8 @@ export function startText(S) {
   const lead = LEAD[S?.settings?.remindCoach || '2h'] || 120;
   return `Готово. Буду напоминать о занятиях за ${lead >= 60 ? `${lead / 60} ч` : `${lead} мин`} и присылать сводку дня в 7:00.\nКоманды: /today — занятия на сегодня, /next — ближайшее.`;
 }
-export const isPaused = (c, date) => !!(c?.pause && c.pause.from <= date && date <= c.pause.to);
+// c.pause is the current or next pause; c.pauses keeps the finished ones (same as the app).
+export const isPaused = (c, date) => [...(c?.pauses || []), ...(c?.pause ? [c.pause] : [])].some((p) => p.from <= date && date <= p.to);
 const onVacation = (S, date) => (S.vacations || []).some((v) => v.from <= date && date <= v.to);
 /** Clients expected at the session: everyone not on pause that day. */
 export const activeClients = (S, s) => s.clientIds.filter((id) => !isPaused(S.clients.find((c) => c.id === id), s.date));
@@ -114,12 +119,13 @@ export function applyAttendance(S, data) {
 /** Messages that are due now and not yet sent, each with the key that marks it as sent. */
 export function dueMessages(S, wnow, wasSent) {
   const out = [];
+  if (!Array.isArray(S?.sessions) || !Array.isArray(S?.clients)) return out;
   const leadKey = S.settings?.remindCoach || '2h', lead = (LEAD[leadKey] || 120) * 60000;
   const today = dayKey(wnow);
   // After each session: buttons to mark attendance; at 21:00 a nudge if something is still unmarked.
   if (S.settings?.tgAttendance !== false) {
-    const ended = S.sessions.filter((s) => !s.cancelled && s.date === today && activeClients(S, s).length
-      && wnow - (startOf(s).getTime() + s.dur * 60000) >= 10 * 60000);
+    const ended = S.sessions.filter((s) => !s.cancelled && activeClients(S, s).length
+      && wnow - endOf(s) >= 10 * 60000 && wnow - endOf(s) < 24 * 3600000);
     for (const s of ended) {
       const k = `att:${s.id}`;
       if (!wasSent(k) && activeClients(S, s).some((id) => !s.att?.[id])) out.push({ key: k, ...attendanceView(S, s) });
@@ -131,11 +137,11 @@ export function dueMessages(S, wnow, wasSent) {
   }
   if (onVacation(S, today)) return out;
   for (const s of S.sessions) {
-    if (s.cancelled || !activeClients(S, s).length) continue;
+    if (s.cancelled || onVacation(S, s.date) || !activeClients(S, s).length) continue;
     const st = startOf(s), key = `${s.id}:${leadKey}`;
     if (wnow >= st - lead && wnow < st && !wasSent(key)) out.push({ key, text: reminderText(S, s, wnow) });
   }
   const dk = `digest:${dayKey(wnow)}`;
-  if (S.settings?.morningDigest !== false && hm(wnow) >= '07:00' && !wasSent(dk)) out.push({ key: dk, text: `Сводка дня\n${dayText(S, wnow)}` });
+  if (S.settings?.morningDigest !== false && hm(wnow) >= '07:00' && hm(wnow) < '12:00' && !wasSent(dk)) out.push({ key: dk, text: `Сводка дня\n${dayText(S, wnow)}` });
   return out;
 }

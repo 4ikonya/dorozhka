@@ -65,15 +65,20 @@ async function tick() {
 const LOGIN_TTL_MIN = 10;
 const fresh = () => new Date(Date.now() - LOGIN_TTL_MIN * 60_000).toISOString();
 
-async function loginStart() {
+// Limits are per caller address, so a stranger requesting codes can't lock the coach out.
+const callerIp = (req: Request) => (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || req.headers.get('x-real-ip') || 'unknown';
+
+async function loginStart(req: Request) {
   const { data: l } = await admin.from('telegram_links').select('bot_name').not('chat_id', 'is', null).limit(1).maybeSingle();
   if (!l) return json({ error: 'Бот ещё не подключён. Войдите по почте и подключите его в разделе «Ещё».' }, 409);
   await admin.from('login_requests').delete().lt('created_at', new Date(Date.now() - 864e5).toISOString());
-  const { count } = await admin.from('login_requests').select('nonce', { count: 'exact', head: true }).gt('created_at', fresh());
-  if ((count ?? 0) >= 30) return json({ error: 'Слишком много попыток входа. Подождите 10 минут.' }, 429);
+  const ip = callerIp(req);
+  const { count: mine } = await admin.from('login_requests').select('nonce', { count: 'exact', head: true }).eq('ip', ip).gt('created_at', fresh());
+  const { count: all } = await admin.from('login_requests').select('nonce', { count: 'exact', head: true }).gt('created_at', fresh());
+  if ((mine ?? 0) >= 6 || (all ?? 0) >= 300) return json({ error: 'Слишком много попыток входа. Подождите 10 минут.' }, 429);
   const nonce = crypto.randomUUID().replaceAll('-', '');
   const code = String(100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000));
-  const { error } = await admin.from('login_requests').insert({ nonce, code });
+  const { error } = await admin.from('login_requests').insert({ nonce, code, ip });
   if (error) throw new Error(error.message);
   return json({ nonce, code, bot: l.bot_name, ttl: LOGIN_TTL_MIN * 60 });
 }
@@ -100,7 +105,7 @@ async function loginAsk(l: Link, chatId: number, nonce: string) {
   if (!r) { await tg(l.token, 'sendMessage', { chat_id: chatId, text: 'Ссылка для входа устарела. Нажмите «Войти через Telegram» на сайте ещё раз.' }); return; }
   await tg(l.token, 'sendMessage', {
     chat_id: chatId,
-    text: `Вход в Дорожку\n\nКод на экране: ${r.code}\nЕсли это вы входите сейчас и код совпадает — нажмите «Да, войти».`,
+    text: `Вход в Дорожку\n\nКод на экране: ${r.code}\nНажмите «Да, войти», только если вы сами сейчас входите на dorozhka.vercel.app и видите этот код. Если ссылку прислал кто-то другой — нажмите «Это не я».`,
     reply_markup: { inline_keyboard: [[{ text: 'Да, войти', callback_data: `login|${nonce}|y` }, { text: 'Это не я', callback_data: `login|${nonce}|n` }]] },
   });
 }
@@ -151,8 +156,11 @@ async function webhook(secret: string, update: any) {
   if (/^\d{6}$/.test(typed) && l.chat_id && Number(l.chat_id) === m.chat.id) {
     const { data: r } = await admin.from('login_requests').select('nonce').eq('code', typed).is('approved_at', null)
       .gt('created_at', fresh()).order('created_at', { ascending: false }).limit(1).maybeSingle();
-    if (r) await admin.from('login_requests').update({ owner: l.owner, approved_at: new Date().toISOString() }).eq('nonce', r.nonce);
-    await tg(l.token, 'sendMessage', { chat_id: m.chat.id, text: r ? 'Вход подтверждён — вернитесь в браузер.' : 'Такого кода нет или он устарел. Нажмите «Новый код» на сайте и отправьте его сюда.' });
+    const { data: ok } = r
+      ? await admin.from('login_requests').update({ owner: l.owner, approved_at: new Date().toISOString() })
+        .eq('nonce', r.nonce).is('approved_at', null).gt('created_at', fresh()).select('nonce')
+      : { data: null };
+    await tg(l.token, 'sendMessage', { chat_id: m.chat.id, text: ok?.length ? 'Вход подтверждён — вернитесь в браузер.' : 'Такого кода нет или он устарел. Нажмите «Новый код» на сайте и отправьте его сюда.' });
     return;
   }
   const S = await stateOf(l.owner);
@@ -179,7 +187,7 @@ Deno.serve(async (req) => {
       await webhook(hook[1], await req.json().catch(() => null));
       return json({ ok: true }); // always 200, or Telegram keeps retrying
     }
-    if (path === '/login/start') return await loginStart();
+    if (path === '/login/start') return await loginStart(req);
     if (path === '/login/poll') {
       const { nonce } = await req.json().catch(() => ({}));
       if (!/^[a-f0-9]{32}$/.test(String(nonce ?? ''))) return json({ error: 'bad request' }, 400);

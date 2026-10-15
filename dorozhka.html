@@ -195,6 +195,7 @@ textarea.inp{resize:vertical;min-height:84px;line-height:1.45}
 .prow{display:grid;grid-template-columns:52px minmax(0,1.4fr) minmax(0,1fr) auto;gap:14px;align-items:center;padding:12px 16px;border-top:1px solid var(--line)}
 .prow:first-child{border-top:0}
 .thumb{width:52px;height:64px;border-radius:6px;border:1px solid var(--line);object-fit:cover;background:var(--surface-2);cursor:zoom-in;padding:0}
+.thumb span{font-size:10px;line-height:1.1;display:block;padding:2px}
 .thumb img{width:100%;height:100%;object-fit:cover;border-radius:5px;display:block}
 .amt{font-family:var(--f-mono);font-weight:500;text-align:right;white-space:nowrap}
 .match{border-radius:10px;padding:10px 12px;font-size:.88rem;display:flex;gap:10px;align-items:center}
@@ -224,6 +225,7 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
 .app.auth .nav,.app.auth .tabbar,.app.auth .topbar .btn{display:none}
 .login{max-width:420px;margin:8vh auto 0;overflow:hidden}
 .login form .btn{align-self:flex-start}
+.login .btn{min-height:44px}
 
 /* plan */
 .prose{max-width:72ch;display:flex;flex-direction:column;gap:12px;line-height:1.6}
@@ -515,15 +517,20 @@ const tariffOptions=sel=>Object.entries(TYPES).map(([k,v])=>{const ts=S.prices.f
 const trialOnly=cs=>cs.upcoming.length>0&&cs.upcoming.every(s=>s.kind==='trial');
 const bTitle=s=>(s.kind?SKIND[s.kind]+' · ':'')+sTitle(s);
 function charged(s,cid){const a=s.att[cid];return a==='present'||(a==='absent'&&S.settings.chargeNoShow)}
-const isPausedC=(c,date)=>!!(c?.pause&&c.pause.from<=date&&date<=c.pause.to);
-const activeIds=s=>s.clientIds.filter(id=>!isPausedC(client(id),s.date));
+// c.pause is the current or next pause; finished parts move to c.pauses so old sessions stay paused.
+const pausesOf=c=>[...(c?.pauses||[]),...(c?.pause?[c.pause]:[])];
+const pauseAt=(c,date)=>pausesOf(c).find(p=>p.from<=date&&date<=p.to);
+const isPausedC=(c,date)=>!!pauseAt(c,date);
+function archivePause(c){const y=iso(addDays(new Date(),-1));
+  if(c.pause&&c.pause.from<=y)c.pauses=(c.pauses||[]).concat({from:c.pause.from,to:c.pause.to<y?c.pause.to:y});delete c.pause}
+const activeIds=s=>s.clientIds.filter(id=>s.att?.[id]||!isPausedC(client(id),s.date));
 function sStatus(s){const now=new Date();if(s.cancelled)return 'cancelled';if(!activeIds(s).length)return 'paused';if(startDT(s)<=now&&endDT(s)>=now)return 'live';
   if(endDT(s)<now)return activeIds(s).every(c=>s.att[c])?'done':'unmarked';return 'planned'}
 /* Charged sessions are taken from the oldest payment first; a payment with a term only covers sessions up to its end date, and what is left after it ends is burned. */
 function clientStats(cid){
   const now=new Date(),today=iso(now);let present=0,absent=0,excused=0;const upcoming=[],usedS=[];
   const me=client(cid);
-  for(const s of S.sessions){if(s.cancelled||!s.clientIds.includes(cid)||isPausedC(me,s.date))continue;const a=s.att[cid];
+  for(const s of S.sessions){if(s.cancelled||!s.clientIds.includes(cid))continue;const a=s.att?.[cid];if(!a&&isPausedC(me,s.date))continue;
     if(a){a==='present'?present++:a==='absent'?absent++:excused++;if(charged(s,cid))usedS.push(s)}
     else if(startDT(s)>now)upcoming.push(s)}
   upcoming.sort(byStart);usedS.sort(byStart);
@@ -565,7 +572,7 @@ function vToday(){
   const now=new Date(),t=iso(now),mon=mondayOf(now);
   const todays=S.sessions.filter(s=>s.date===t).sort(byStart);
   const next=S.sessions.filter(s=>!s.cancelled&&endDT(s)>now).sort(byStart)[0];
-  const wk=S.sessions.filter(s=>!s.cancelled&&startDT(s)>=mon&&endDT(s)<now);
+  const wk=S.sessions.filter(s=>!s.cancelled&&startDT(s)>=mon&&endDT(s)<now&&Object.keys(s.att||{}).length);
   let pres=0,abs=0;wk.forEach(s=>Object.values(s.att).forEach(a=>a==='present'?pres++:abs++));
   const mPaid=S.payments.filter(p=>{const d=pdate(p.date);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()}).reduce((a,p)=>a+p.amount,0);
   const todayLeft=todays.filter(s=>!s.cancelled&&endDT(s)>now).length;
@@ -575,7 +582,7 @@ function vToday(){
   <div class="stats">
     <div class="stat"><span class="eyebrow">Проведено за неделю</span><b>${wk.length}</b><span class="small muted">${plural(wk.length,'занятие','занятия','занятий')}</span></div>
     <div class="stat"><span class="eyebrow">Посещений</span><b>${pres}</b><span class="small muted">пропусков ${abs}</span></div>
-    <div class="stat"><span class="eyebrow">Оплачено в ${MON_P[now.getMonth()]}</span><b>${money(mPaid)}</b><span class="small muted">${S.payments.filter(p=>pdate(p.date).getMonth()===now.getMonth()).length} чеков</span></div>
+    <div class="stat"><span class="eyebrow">Оплачено в ${MON_P[now.getMonth()]}</span><b>${money(mPaid)}</b><span class="small muted">${(n=>`${n} ${plural(n,'оплата','оплаты','оплат')}`)(S.payments.filter(p=>{const d=pdate(p.date);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()}).length)}</span></div>
     <div class="stat"><span class="eyebrow">Нужна оплата</span><b>${S.clients.filter(c=>{const cs=clientStats(c.id);return cs.remaining<=1&&!trialOnly(cs)}).length}</b><span class="small muted">клиентов с остатком ≤ 1</span></div>
   </div>
   <div class="today">
@@ -638,7 +645,7 @@ function vSchedule(){
   const agenda=`<div class="agenda"><div class="dstrip">${days.map((d,i)=>{const n=list.filter(s=>s.date===iso(d));return `<button data-act="selday" data-i="${i}" aria-pressed="${i===UI.selDay}">${DAY[i]}<b>${d.getDate()}</b><span class="cnt">${n.slice(0,4).map(s=>`<i class="t-${s.type}"></i>`).join('')}</span></button>`}).join('')}</div>
     <div class="panel"><div class="panel-h"><h2>${DAYF[UI.selDay][0].toUpperCase()+DAYF[UI.selDay].slice(1)}, ${fdate(sd)}</h2><button class="btn sm" data-act="new-session" data-date="${iso(sd)}">+ Добавить</button></div>
     ${sdl.length?`<ul class="tl">${sdl.map(tlItem).join('')}</ul>`:'<div class="empty">В этот день занятий нет.</div>'}</div></div>`;
-  return `<div class="page-head"><div><h1>Расписание</h1><p class="sub">${list.filter(s=>!s.cancelled).length} ${plural(list.length,'занятие','занятия','занятий')} на неделе · нажмите на пустое место, чтобы добавить</p></div>
+  return `<div class="page-head"><div><h1>Расписание</h1><p class="sub">${(n=>`${n} ${plural(n,'занятие','занятия','занятий')}`)(list.filter(s=>!s.cancelled).length)} на неделе · нажмите на пустое место, чтобы добавить</p></div>
     <div class="row"><div class="wk-nav"><button class="btn icon-btn" data-act="week" data-d="-1" aria-label="Прошлая неделя">${ic('left')}</button><span class="wk-title">${title}</span><button class="btn icon-btn" data-act="week" data-d="1" aria-label="Следующая неделя">${ic('right')}</button></div>
     ${UI.week!==0?'<button class="btn sm ghost" data-act="week" data-d="0">Эта неделя</button>':''}<button class="btn" data-act="vacation">Я не работаю</button><button class="btn primary" data-act="new-session">+ Занятие</button></div></div>
   <div class="legend">${Object.entries(TYPES).map(([k,v])=>`<span><i class="dot t-${k}"></i>${v.label}</span>`).join('')}<span><i class="dot st-unmarked"></i>Не отмечено посещение</span></div>
@@ -668,7 +675,7 @@ function tiles(cs){const left=Math.max(0,cs.remaining),cap=Math.min(cs.aUsed+lef
 function vPayments(){
   const now=new Date();
   const m=S.payments.filter(p=>{const d=pdate(p.date);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()});
-  return `<div class="page-head"><div><h1>Оплаты и чеки</h1><p class="sub">В этом месяце ${money(m.reduce((a,p)=>a+p.amount,0))} · ${m.length} ${plural(m.length,'чек','чека','чеков')} · ${m.reduce((a,p)=>a+p.sessions,0)} оплаченных занятий</p></div>
+  return `<div class="page-head"><div><h1>Оплаты и чеки</h1><p class="sub">В этом месяце ${money(m.reduce((a,p)=>a+p.amount,0))} · ${m.length} ${plural(m.length,'чек','чека','чеков')} · ${(n=>`${n} ${plural(n,'оплаченное занятие','оплаченных занятия','оплаченных занятий')}`)(m.reduce((a,p)=>a+p.sessions,0))}</p></div>
     <div class="row"><button class="btn primary" data-act="new-payment">+ Добавить чек</button></div></div>
   <div class="toolbar"><input class="inp" id="p-search" type="search" placeholder="Номер телефона или имя" value="${esc(UI.pQuery)}" aria-label="Поиск оплаты"></div>
   <div class="card plist" id="plist">${payList()}</div>`;
@@ -679,7 +686,7 @@ function payList(){
     return !q||(c&&c.name.toLowerCase().includes(q))||(w&&w.name.toLowerCase().includes(q))||(qd.length>2&&digits(p.phone).includes(qd))});
   if(!list.length)return '<div class="empty">Чеков не нашли.</div>';
   return list.map(p=>{const c=client(p.clientId),w=client(p.with),t=tariff(p.tariff);return `<div class="prow">
-    <button class="thumb" data-act="view-receipt" data-id="${p.id}" aria-label="Открыть чек">${p.img?`<img src="${p.img}" alt="">`:''}</button>
+    <button class="thumb" data-act="view-receipt" data-id="${p.id}" aria-label="Открыть оплату">${p.img?`<img src="${p.img}" alt="">`:'<span class="small muted">без фото</span>'}</button>
     <div style="min-width:0"><button class="btn ghost" style="padding:0;font-weight:600;color:var(--ink);white-space:normal;text-align:left" data-act="open-client" data-id="${p.clientId}">${esc(c?.name||'Без клиента')}${w?` + ${esc(w.name.split(' ')[0])}`:''}</button><div class="small muted mono">${esc(p.phone)}</div></div>
     <div class="pmeta small muted">${t?esc(t.label):'Без тарифа'}<br>${fdateS(p.date)} · ${esc(p.method)} · ${p.sessions===1?'разовое':`${p.sessions} ${plural(p.sessions,'занятие','занятия','занятий')}`}${p.until?` · до ${fdateS(p.until)}`:''}</div>
     <div class="amt">${money(p.amount)}</div></div>`}).join('');
@@ -811,7 +818,7 @@ function sessionSheet(id){
   const s=S.sessions.find(x=>x.id===id);if(!s)return closeSheet();
   const st=sStatus(s),pn=prevNote(s),d=pdate(s.date),chips=s.type==='baby'?BABY_CHIPS:SWIM_CHIPS;
   const rows=s.clientIds.map(cid=>{const c=client(cid),cs=clientStats(cid),a=s.att[cid]||'';
-    if(isPausedC(c,s.date))return `<li class="att-row"><div class="att-who"><b>${esc(c.name)}</b><span class="small muted">не списывается</span></div><span class="chip st-paused">Пауза до ${fdateS(c.pause.to)}</span></li>`;
+    if(!a&&isPausedC(c,s.date))return `<li class="att-row"><div class="att-who"><b>${esc(c.name)}</b><span class="small muted">не списывается</span></div><span class="chip st-paused">Пауза до ${fdateS(pauseAt(c,s.date).to)}</span></li>`;
     return `<li class="att-row"><div class="att-who"><b>${esc(c.name)}</b><span class="small muted">${remLabel(cs)}</span></div><div class="seg" role="group" aria-label="Посещение: ${esc(c.name)}">${Object.keys(ATT).map(v=>`<button type="button" class="seg-b ${a===v?'on '+v:''}" data-act="att" data-sid="${s.id}" data-cid="${cid}" data-v="${v}" aria-pressed="${a===v}">${ATT[v]}</button>`).join('')}</div></li>`}).join('');
   openSheet(`${sheetHead(esc(sTitle(s)),`${DAYF[wd(d)]}, ${fdate(d)} · <span class="mono">${s.start}–${hm(endDT(s))}</span> · ${esc(s.place)}`)}
   <div class="sheet-b">
@@ -847,7 +854,7 @@ function clientSheet(id){
     <div class="blockt"><label class="f" for="c-note">Заметка о клиенте</label><textarea class="inp" id="c-note" data-cfield="note" data-cid="${id}" placeholder="Особенности, страхи, цели">${esc(c.note)}</textarea></div>
     ${notes.length?`<div class="blockt"><h3>Последние заметки тренера</h3>${notes.map(s=>`<div class="prev-note"><span class="eyebrow">${fdateS(s.date)}</span><span>${esc(s.log)}</span></div>`).join('')}</div>`:''}
     <div class="blockt"><h3>История</h3><ul class="hist">${hist.map(s=>{const a=s.att[id];return `<li><span class="mono small">${fdateS(s.date).replace(/ (\S{3})\S*/,' $1')} ${s.start}</span><span class="small" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${TYPES[s.type].label}</span><span class="chip ${a==='present'?'lv-ok':a==='absent'?'lv-bad':a==='excused'?'lv-warn':'st-unmarked'}">${a?ATT[a]:s.cancelled?'Отменено':'Не отмечено'}</span></li>`}).join('')||'<li class="muted">Занятий ещё не было</li>'}</ul></div>
-    <div class="blockt"><h3>Чеки</h3>${pays.length?`<div class="rthumbs">${pays.map(p=>`<button class="thumb" data-act="view-receipt" data-id="${p.id}" aria-label="Чек от ${fdateS(p.date)}" title="${fdateS(p.date)} · ${money(p.amount)}"><img src="${p.img}" alt=""></button>`).join('')}</div>`:'<p class="muted small">Чеков нет</p>'}</div>
+    <div class="blockt"><h3>Чеки</h3>${pays.some(p=>p.img)?`<div class="rthumbs">${pays.filter(p=>p.img).map(p=>`<button class="thumb" data-act="view-receipt" data-id="${p.id}" aria-label="Чек от ${fdateS(p.date)}" title="${fdateS(p.date)} · ${money(p.amount)}"><img src="${p.img}" alt=""></button>`).join('')}</div>`:'<p class="muted small">Чеков нет</p>'}</div>
   </div><div class="sheet-f"><button class="btn ghost danger" data-act="del-client" data-id="${id}">Удалить клиента</button><button class="btn primary" data-act="close">Готово</button></div>`,'c:'+id);
 }
 
@@ -930,7 +937,7 @@ function matchHTML(p,sel){
   return '';
 }
 function receiptSheet(id){const p=S.payments.find(x=>x.id===id);if(!p)return;const c=client(p.clientId),w=client(p.with),t=tariff(p.tariff);
-  openSheet(`${sheetHead('Чек · '+money(p.amount),`${esc(c?.name||'')}${w?' и '+esc(w.name):''} · <span class="mono">${esc(p.phone)}</span> · ${fdateS(p.date)} · ${esc(p.method)}`)}<div class="sheet-b"><img class="big-receipt" src="${p.img}" alt="Чек оплаты">
+  openSheet(`${sheetHead('Чек · '+money(p.amount),`${esc(c?.name||'')}${w?' и '+esc(w.name):''} · <span class="mono">${esc(p.phone)}</span> · ${fdateS(p.date)} · ${esc(p.method)}`)}<div class="sheet-b">${p.img?`<img class="big-receipt" src="${p.img}" alt="Чек оплаты">`:'<p class="muted">Фото чека не прикреплено.</p>'}
   <p class="small muted">${t?esc(t.label)+' · ':''}${p.sessions===1?'разовое занятие':`+${p.sessions} ${plural(p.sessions,'занятие','занятия','занятий')}${w?' каждому':''}`}${p.until?` · действует до ${fdateS(p.until)}`:''}</p></div>
   <div class="sheet-f"><button class="btn ghost danger" data-act="del-payment" data-id="${p.id}">Удалить чек</button><button class="btn" data-act="open-client" data-id="${p.clientId}">Карточка клиента</button></div>`,'r:'+id)}
 function groupSheet(id,type){
@@ -986,9 +993,9 @@ function vacDoneSheet(from,to,n){
 /* ---------- reading a Kaspi receipt (on the device, tesseract.js) ---------- */
 let tessLoading=null;
 function loadTesseract(){if(window.Tesseract)return Promise.resolve();
-  return tessLoading||(tessLoading=new Promise((ok,no)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';s.onload=ok;s.onerror=()=>{tessLoading=null;no(new Error('load'))};document.head.appendChild(s)}))}
+  return tessLoading||(tessLoading=new Promise((ok,no)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';s.integrity='sha384-GJqSu7vueQ9qN0E9yLPb3Wtpd7OrgK8KmYzC8T1IysG1bcvxvIO4qtYR/D3A991F';s.crossOrigin='anonymous';s.onload=ok;s.onerror=()=>{tessLoading=null;no(new Error('load'))};document.head.appendChild(s)}))}
 function parseReceipt(text){
-  const PHONE=/(?:\+7|8)[\s(-]*(7\d{2})[\s)-]*(\d{3})[\s-]*(\d{2})[\s-]*(\d{2})/;
+  const PHONE=/(?:\+7|8|(?<!\d)7(?=[\s(-]))[\s(-]*(7\d{2})[\s)-]*(\d{3})[\s-]*(\d{2})[\s-]*(\d{2})/;
   const raw=String(text).replace(/[\u00a0\u202f\u2009]/g,' '),p=raw.match(PHONE),t=raw.replace(new RegExp(PHONE.source,'g'),' ');
   // OCR often reads ₸ as a lone «т» or «T».
   const money=[...t.matchAll(/(\d{1,3}(?:[ .]\d{3})+|\d{3,7})(?:,\d{1,2})?\s*(?:₸|тг|тенге|〒|[тТT](?![А-Яа-яA-Za-z]))/g)].map(m=>+m[1].replace(/[ .]/g,''));
@@ -998,8 +1005,10 @@ function parseReceipt(text){
   const d=t.match(/(\d{2})[.\/](\d{2})[.\/](\d{4})/);
   return {amount,date:d?`${d[3]}-${d[2]}-${d[1]}`:null,phone:p?`+7 ${p[1]} ${p[2]} ${p[3]} ${p[4]}`:null};
 }
-function matchTariff(amount){
-  for(const t of S.prices)for(const n of [1,8,10]){const f=n===1?'one':'p'+n;if(!t[f])continue;
+// Several tariffs can cost the same; the one already chosen for the client wins.
+function matchTariff(amount,prefer){
+  const list=[...S.prices].sort((a,b)=>(b.id===prefer)-(a.id===prefer));
+  for(const t of list)for(const n of [1,8,10]){const f=n===1?'one':'p'+n;if(!t[f])continue;
     if(priceFor(t,n)===amount)return {t,n,two:false};if(t.id==='family'&&priceFor(t,n)*2===amount)return {t,n,two:true}}
   return null;
 }
@@ -1013,7 +1022,7 @@ async function readReceipt(img){
     if(f.date){document.getElementById('np-date').value=f.date;got.push(fdateS(f.date))}
     if(!f.amount){box.textContent=got.length?`С чека: ${got.join(', ')}. Сумму не нашёл — впишите её сами.`:'Не получилось прочитать чек. Заполните поля вручную.';return}
     got.push(money(f.amount));
-    const m=matchTariff(f.amount);
+    const m=matchTariff(f.amount,document.getElementById('np-tariff')?.value||client(curCid())?.tariff);
     if(m){setPayTariff(m.t,curCid(),false);document.getElementById('np-sessions').value=m.n;
       const w=document.getElementById('np-with');if(w&&m.t.id==='family'&&!m.two)w.value='';recalcAmount()}
     document.getElementById('np-amount').value=f.amount;
@@ -1158,8 +1167,8 @@ document.addEventListener('click',e=>{
     persist();render();return vacDoneSheet(from,to,ss.length)}
   if(a==='pause-set'){const c=client(t.dataset.cid),from=document.getElementById('cp-from').value,to=document.getElementById('cp-to').value;
     if(!from||!to||from>to){toast('Проверьте даты','«С» должно быть не позже «по»');return}
-    c.pause={from,to};persist();render();toast('Пауза поставлена',`${esc(c.name.split(' ')[0])}: с ${fdateS(from)} по ${fdateS(to)}`);return clientSheet(c.id)}
-  if(a==='pause-clear'){const c=client(t.dataset.cid);delete c.pause;persist();render();toast('Пауза снята',esc(c.name));return clientSheet(c.id)}
+    archivePause(c);c.pause={from,to};persist();render();toast('Пауза поставлена',`${esc(c.name.split(' ')[0])}: с ${fdateS(from)} по ${fdateS(to)}`);return clientSheet(c.id)}
+  if(a==='pause-clear'){const c=client(t.dataset.cid);archivePause(c);persist();render();toast('Пауза снята',esc(c.name));return clientSheet(c.id)}
   if(a==='copy-revenue'){const {months}=revenueData();return copyText([['Месяц','Доход, ₸','Оплат','Новых клиентов']].concat(months.map(x=>[`${MON_S[x.m]} ${x.y}`,x.sum,x.n,x.newC])).map(r=>r.join('\t')).join('\n'),'Вставьте в Excel или Google Таблицы')}
   if(a==='copy-report'){const rows=[['Клиент','Тип','Тариф','Телефон','Прошло','Пропуски','Оплачено','Осталось']].concat(S.clients.map(c=>{const cs=clientStats(c.id);return [c.name,KINDS[c.kind],tariffOf(c).label,c.phone,cs.used,cs.absent+cs.excused,cs.paid,cs.remaining]}));
     return copyText(rows.map(r=>r.join('\t')).join('\n'),'Вставьте в Excel или Google Таблицы — колонки разложатся сами')}
@@ -1217,8 +1226,9 @@ document.addEventListener('submit',e=>{
     const rep=+fd.get('rep'),base=pdate(fd.get('date'));
     for(let i=0;i<(rep||1);i++)S.sessions.push({id:uid('s'),date:iso(addDays(base,i*7)),start:fd.get('start'),dur:+fd.get('dur'),type,kind,groupId,clientIds:[...clientIds],place:fd.get('place')||'',att:{},log:'',next:'',cancelled:false});
     S.sessions.sort(byStart);persist();UI.week=Math.round((mondayOf(base)-mondayOf(new Date()))/(7*864e5));UI.selDay=wd(base);UI.view='schedule';closeSheet();
-    toast(kind?`${SKIND[kind]} создано`:'Занятие создано',`${DAYF[wd(base)]}, ${fdate(base)}, ${fd.get('start')}${rep>1?` и ещё ${rep-1} по ${DAY[wd(base)]}`:''}`);return}
+    toast(kind?`${SKIND[kind]} ${kind==='makeup'?'создана':'занятие создано'}`:'Занятие создано',`${DAYF[wd(base)]}, ${fdate(base)}, ${fd.get('start')}${rep>1?` и ещё ${rep-1} по ${DAY[wd(base)]}`:''}`);return}
   if(f.id==='f-client'){
+    if(digits(fd.get('phone')).length<10){toast('Проверьте номер','Нужно 10 цифр после +7');return}
     const gid=fd.get('group');if(gid&&group(gid).clientIds.length>=GROUP_MAX){toast('Группа заполнена',`В группе уже ${GROUP_MAX} человек`);return}
     const c={id:uid('c'),name:fd.get('name').trim(),phone:fmtPhone(fd.get('phone')),kind:fd.get('kind'),age:fd.get('age')||'',parent:fd.get('parent')||'',tariff:fd.get('tariff'),note:fd.get('note')||''};
     S.clients.push(c);if(gid){const g=group(gid);g.clientIds.push(c.id);syncGroupSessions(g)}
@@ -1240,7 +1250,7 @@ document.addEventListener('submit',e=>{
     if(w&&w===c.id){toast('Один и тот же клиент','Выберите другого второго участника');return}
     const pd=fd.get('date')||iso(new Date()),term=+fd.get('term');
     const p={id:uid('p'),clientId:c.id,with:w,tariff:t?.id||null,phone:c.phone,date:pd,amount:+fd.get('amount'),sessions:+fd.get('sessions'),method:fd.get('method'),until:term?iso(addDays(pdate(pd),term)):null};
-    p.img=UI.pendingImg||receiptSVG(p,c.parent?c.parent.split(',')[0]:c.name);S.payments.push(p);persist();
+    p.img=UI.pendingImg||(SERVER.on?null:receiptSVG(p,c.parent?c.parent.split(',')[0]:c.name));S.payments.push(p);persist();
     const cs=clientStats(c.id);UI.view='payments';closeSheet();toast('Оплата сохранена',`${esc(c.name)}${w?` и ${esc(client(w).name.split(' ')[0])}`:''}: теперь ${remLabel(cs)}`);return}
 });
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&UI.openSheet)closeSheet()});
@@ -1303,7 +1313,7 @@ function renderLogin(msg){
    and this page trades the approved request for a session. */
 const LOGIN={timer:null,busy:false,qr:null};
 function loadQR(){if(window.qrcode)return Promise.resolve();
-  return LOGIN.qr||(LOGIN.qr=new Promise((ok,no)=>{const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js';s.onload=ok;s.onerror=()=>{LOGIN.qr=null;no(new Error('load'))};document.head.appendChild(s)}))}
+  return LOGIN.qr||(LOGIN.qr=new Promise((ok,no)=>{const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js';s.integrity='sha384-mZT2gIty7ZDdOGkxfP6joZcYdMW1Jvj9dRlfpTmaJAKKXTqzygtB22k7FLe+KZC1';s.crossOrigin='anonymous';s.onload=ok;s.onerror=()=>{LOGIN.qr=null;no(new Error('load'))};document.head.appendChild(s)}))}
 async function loginCall(step,body){
   const r=await fetch(`${CLOUD.url}/functions/v1/telegram/login/${step}`,{method:'POST',headers:{'content-type':'application/json',apikey:CLOUD.anonKey},body:JSON.stringify(body||{})});
   const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||('Ошибка '+r.status));return j}

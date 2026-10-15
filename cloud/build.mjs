@@ -32,7 +32,8 @@ const head = [
   '<link rel="icon" href="/icon.svg" type="image/svg+xml">',
   '<link rel="apple-touch-icon" href="/icon.svg">',
   '<style>:root{color-scheme:light}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>',
-  '<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>',
+  // Pinned with a hash: a changed CDN file is refused instead of running with the coach's session.
+  '<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js" integrity="sha384-0w2KAL2YHP6wKOkUDzkCDGgVvfmHnj02DHeQ6XcHOgTfFsGyonKOpShMH1x6nk9o" crossorigin="anonymous"></script>',
   `<script>window.DOROZHKA_CLOUD=${JSON.stringify(cloud)}</script>`,
 ].join('');
 fs.writeFileSync(path.join(web, 'index.html'), `<!doctype html><html lang="ru"><head>${head}</head><body>${body}</body></html>`);
@@ -63,6 +64,7 @@ fs.writeFileSync(path.join(web, 'vercel.json'), JSON.stringify({
     { key: 'X-Frame-Options', value: 'DENY' },
     { key: 'Referrer-Policy', value: 'same-origin' },
     { key: 'X-Content-Type-Options', value: 'nosniff' },
+    { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=()' },
   ] }],
 }, null, 2));
 

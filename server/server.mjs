@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { applyAttendance, attendanceView, dueMessages, dayText, nextText, startText, wallNow } from '../shared/schedule.mjs';
+import { DEFAULT_TZ, applyAttendance, attendanceView, dueMessages, dayText, nextText, startText, wallNow } from '../shared/schedule.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT) || 4318;
@@ -51,7 +51,8 @@ const tgRow = () => db.prepare('SELECT token, bot_name, chat_id, update_offset F
 const tgStatus = () => { const t = tgRow(); return { connected: !!t.token, chatLinked: !!t.chat_id, botName: t.bot_name || '' }; };
 
 /* ---------- schedule: shared with the cloud function ---------- */
-const wnow = () => wallNow(new Date()); // laptop's own time zone
+// The coach's time zone from the app settings, not the laptop's own.
+const wnow = (S = readState().state) => wallNow(new Date(), S?.settings?.tz || DEFAULT_TZ);
 
 /* ---------- telegram ---------- */
 async function tg(method, body, token = tgRow().token) {
@@ -78,7 +79,7 @@ async function tick() {
   if (!t.token || !t.chat_id) return;
   const { state: S } = readState();
   if (!S) return;
-  for (const m of dueMessages(S, wnow(), wasSent)) await deliver(m.key, m.text, m.reply_markup ? { reply_markup: m.reply_markup } : {});
+  for (const m of dueMessages(S, wnow(S), wasSent)) await deliver(m.key, m.text, m.reply_markup ? { reply_markup: m.reply_markup } : {});
 }
 // A press on "был / не предупредил / предупредил" under an attendance message.
 async function onButton(q) {
