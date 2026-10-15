@@ -89,6 +89,8 @@ a.btn{color:var(--ink);text-decoration:none}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .fchip{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:6px 12px;font-size:.86rem;color:var(--muted)}
 .fchip[aria-pressed="true"]{background:var(--ink);border-color:var(--ink);color:var(--bg)}
+.wdays label{position:relative;cursor:pointer;min-width:44px;text-align:center}.wdays input{position:absolute;opacity:0;pointer-events:none}
+.wdays label:has(input:checked){background:var(--ink);border-color:var(--ink);color:var(--bg)}.wdays label:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
 .chip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 9px;font-size:.76rem;font-weight:600;white-space:nowrap;
   background:color-mix(in srgb,var(--tc,var(--muted)) 15%,transparent);color:color-mix(in srgb,var(--tc,var(--muted)) 78%,var(--ink))}
 .t-baby{--tc:var(--t-baby)} .t-individual{--tc:var(--t-individual)} .t-group{--tc:var(--t-group)} .t-split{--tc:var(--t-split)} .t-minigroup{--tc:var(--t-minigroup)} .k-trial{--tc:var(--accent)} .k-makeup{--tc:var(--warn)}
@@ -350,6 +352,10 @@ const KINDS={baby:'Грудничок',kid:'Ребёнок',adult:'Взросл�
 // A group needs at least one person and has no upper limit.
 const GROUP_MIN=1;
 const people=n=>`${n} ${plural(n,'человек','человека','человек')}`;
+// A split is always a pair: one client booked as a pair, or two clients, counts as two people.
+const SPLIT_N=2;
+const heads=s=>s.type==='split'?SPLIT_N:s.clientIds.length;
+const attWeight=s=>s.type==='split'&&s.clientIds.length===1?SPLIT_N:1;
 /* The coach's price list. Family price is per child; split price is for the pair. */
 const PRICES=[
   {id:'adult-ind',label:'Взрослый, персонально',type:'individual',one:8000,p8:65000,p10:75000},
@@ -556,6 +562,28 @@ function clientStats(cid){
   return {paid,aPaid,aUsed,debt:Math.max(0,-remaining),used:usedS.length,present,absent,excused,remaining,burned,until,upcoming,lastCovered,firstUnpaid,lv};
 }
 function remLabel(cs){return cs.remaining<0?`долг ${-cs.remaining} ${plural(-cs.remaining,'занятие','занятия','занятий')}`:cs.remaining===0?'абонемент закончился':`осталось ${cs.remaining} из ${cs.aPaid}${cs.until?`, до ${fdateS(cs.until)}`:''}`}
+// Dates for exactly n sessions on the chosen weekdays (0 = Monday) from `from` on, skipping the coach's days off. The series stops at n and is never extended.
+function planDates(from,days,n){const out=[],off=S.vacations||[];if(!days.length||!(n>0))return out;
+  for(let d=pdate(from),guard=0;out.length<n&&guard<730;d=addDays(d,1),guard++){const di=iso(d);if(days.includes(wd(d))&&!off.some(v=>v.from<=di&&di<=v.to))out.push(di)}return out}
+const daysLabel=days=>days.slice().sort().map(i=>DAY[i]).join(', ');
+function planInfo(from,days,n){const ds=planDates(from,days,n);if(!ds.length)return 'Выберите дни недели и число тренировок.';
+  return `По ${days.length} в неделю, ${daysLabel(days)}. Первая ${fdateS(ds[0])}, последняя ${fdateS(ds[ds.length-1])}. Всего ${ds.length} ${plural(ds.length,'тренировка','тренировки','тренировок')}, дальше не продлевается.`}
+const wdChips=(name,sel)=>`<div class="chips wdays" role="group" aria-label="Дни недели">${DAY.map((d,i)=>`<label class="fchip"><input type="checkbox" name="${name}" value="${i}" ${sel.includes(i)?'checked':''}>${d}</label>`).join('')}</div>`;
+// Future sessions of this client that a new plan replaces: not in a group, not marked yet.
+const planned=cid=>{const now=new Date();return S.sessions.filter(s=>!s.groupId&&!s.cancelled&&s.clientIds.includes(cid)&&startDT(s)>now&&!Object.keys(s.att||{}).length)};
+function planBlock(c){const t=tariffOf(c),cs=clientStats(c.id);
+  if(GROUPISH(t.type))return `<div class="blockt"><h3>Тренировки по абонементу</h3><p class="small muted">Клиент ходит в группу: дни и время задаёт группа.</p></div>`;
+  const pl=c.plan||{},n=pl.n||(cs.remaining>0?cs.remaining:t.p8?8:t.p10?10:1),days=pl.days||[wd(new Date())],time=pl.time||'18:00',from=iso(new Date()),old=planned(c.id).length;
+  return `<div class="blockt" id="plan"><h3>Тренировки по абонементу</h3>
+    <p class="small muted">Укажите, сколько тренировок и в какие дни. Они встанут в расписание поровну на каждую неделю и закончатся на последней — без продления.</p>
+    <div class="grid3"><label class="f" for="pl-n">Тренировок<input class="inp" type="number" id="pl-n" min="1" max="60" value="${n}"></label>
+      <label class="f" for="pl-time">Время<input class="inp" type="time" id="pl-time" value="${time}" step="300"></label>
+      <label class="f" for="pl-from">С какого дня<input class="inp" type="date" id="pl-from" value="${from}"></label></div>
+    ${wdChips('pl-wd',days)}
+    <p class="small muted" id="pl-info">${planInfo(from,days,n)}</p>
+    ${old?`<label class="small"><input type="checkbox" id="pl-replace" checked> Убрать уже запланированные (${old})</label>`:''}
+    <div class="row"><button class="btn" data-act="plan-apply" data-cid="${c.id}">Поставить в расписание</button></div></div>`}
+function readPlan(){const g=id=>document.getElementById(id);return {n:Math.min(60,Math.max(0,Math.floor(+g('pl-n').value||0))),time:g('pl-time').value,from:g('pl-from').value,days:[...document.querySelectorAll('[name="pl-wd"]:checked')].map(x=>+x.value)}}
 function prevNote(s){
   const t=startDT(s);
   const same=x=>s.groupId?x.groupId===s.groupId:(!x.groupId&&x.clientIds[0]===s.clientIds[0]);
@@ -579,7 +607,7 @@ function vToday(){
   const todays=S.sessions.filter(s=>s.date===t).sort(byStart);
   const next=S.sessions.filter(s=>!s.cancelled&&endDT(s)>now).sort(byStart)[0];
   const wk=S.sessions.filter(s=>!s.cancelled&&startDT(s)>=mon&&endDT(s)<now&&Object.keys(s.att||{}).length);
-  let pres=0,abs=0;wk.forEach(s=>Object.values(s.att).forEach(a=>a==='present'?pres++:abs++));
+  let pres=0,abs=0;wk.forEach(s=>Object.values(s.att).forEach(a=>a==='present'?pres+=attWeight(s):abs+=attWeight(s)));
   const mPaid=S.payments.filter(p=>{const d=pdate(p.date);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()}).reduce((a,p)=>a+p.amount,0);
   const todayLeft=todays.filter(s=>!s.cancelled&&endDT(s)>now).length;
   return `<div class="page-head"><div><h1>${DAYF[wd(now)][0].toUpperCase()+DAYF[wd(now)].slice(1)}, ${fdate(now)}</h1>
@@ -605,7 +633,7 @@ function nextCard(s){
     <div class="row" style="justify-content:space-between"><span class="eyebrow">${st==='live'?'Идёт сейчас':'Следующее занятие'}</span><span class="when">${st==='live'?`до ${hm(endDT(s))}`:rel(startDT(s)-now)}</span></div>
     <div><div class="next-time">${s.start}<span class="muted" style="font-size:.5em">–${hm(endDT(s))}</span></div></div>
     <div style="display:flex;flex-direction:column;gap:6px"><h2>${esc(bTitle(s))}</h2>
-      <div class="row small muted"><span class="chip t-${s.type}">${TYPES[s.type].label}</span><span>${esc(s.place)}</span><span>·</span><span>${s.date===iso(now)?'сегодня':DAYF[wd(pdate(s.date))]+', '+fdateS(s.date)}</span></div></div>
+      <div class="row small muted"><span class="chip t-${s.type}">${TYPES[s.type].label}${s.type==='split'?' · '+people(heads(s)):''}</span><span>${esc(s.place)}</span><span>·</span><span>${s.date===iso(now)?'сегодня':DAYF[wd(pdate(s.date))]+', '+fdateS(s.date)}</span></div></div>
     ${pn?`<div class="prev-note"><span class="eyebrow">Заметка с прошлого раза · ${fdateS(pn.date)}</span><span>${esc(pn.next)}</span></div>`:''}
     <div class="people">${s.clientIds.map(id=>{const c=client(id),cs=clientStats(id);return `<span class="person"><span class="ava">${initials(c.name)}</span>${esc(c.name.split(' ')[0])}<span class="chip lv-${cs.lv}">${cs.remaining}</span></span>`}).join('')}</div>
     <div class="row"><button class="btn primary" data-act="open-session" data-id="${s.id}">Открыть и отметить</button></div>
@@ -706,7 +734,7 @@ function vReports(){
   const now=new Date();
   const past=S.sessions.filter(s=>!s.cancelled&&endDT(s)<now&&(UI.rType==='all'||s.type===UI.rType));
   const per=past.filter(inPeriod);
-  const cnt=(arr,v)=>arr.reduce((a,s)=>a+Object.values(s.att).filter(x=>x===v).length,0);
+  const cnt=(arr,v)=>arr.reduce((a,s)=>a+Object.values(s.att).filter(x=>x===v).length*attWeight(s),0);
   const pres=cnt(per,'present'),abs=cnt(per,'absent'),exc=cnt(per,'excused');
   const upcoming=S.sessions.filter(s=>!s.cancelled&&startDT(s)>now&&(UI.rType==='all'||s.type===UI.rType)&&(UI.period==='week'?startDT(s)<addDays(mondayOf(now),7):UI.period==='month'?startDT(s).getMonth()===now.getMonth():true));
   const remaining=S.clients.reduce((a,c)=>a+Math.max(0,clientStats(c.id).remaining),0);
@@ -827,7 +855,7 @@ function sessionSheet(id){
     return `<li class="att-row"><div class="att-who"><b>${esc(c.name)}</b><span class="small muted">${s.kind==='trial'?'пробное — не списывается':remLabel(cs)}</span></div><div class="seg" role="group" aria-label="Посещение: ${esc(c.name)}">${Object.keys(ATT).map(v=>`<button type="button" class="seg-b ${a===v?'on '+v:''}" data-act="att" data-sid="${s.id}" data-cid="${cid}" data-v="${v}" aria-pressed="${a===v}">${ATT[v]}</button>`).join('')}</div></li>`}).join('');
   openSheet(`${sheetHead(esc(sTitle(s)),`${DAYF[wd(d)]}, ${fdate(d)} · <span class="mono">${s.start}–${hm(endDT(s))}</span> · ${esc(s.place)}`)}
   <div class="sheet-b">
-    <div class="row"><span class="chip t-${s.type}">${TYPES[s.type].label}</span>${s.kind?`<span class="chip k-${s.kind}">${SKIND[s.kind]}</span>`:''}<span class="chip st-${st}">${ST[st]}</span></div>
+    <div class="row"><span class="chip t-${s.type}">${TYPES[s.type].label}${s.type==='split'?' · '+people(heads(s)):''}</span>${s.kind?`<span class="chip k-${s.kind}">${SKIND[s.kind]}</span>`:''}<span class="chip st-${st}">${ST[st]}</span></div>
     ${pn?`<div class="prev-note"><span class="eyebrow">Заметка с прошлого раза · ${fdateS(pn.date)}</span><span>${esc(pn.next)}</span></div>`:''}
     <div class="blockt"><div class="row" style="justify-content:space-between"><h3>Посещение</h3><span class="small muted">Списывается, если был или не предупредил</span></div><ul class="att">${rows}</ul></div>
     <div class="blockt"><label class="f" for="s-log">Как прошло занятие</label>
@@ -844,7 +872,7 @@ function clientSheet(id){
   const hist=S.sessions.filter(s=>s.clientIds.includes(id)&&startDT(s)<now).sort(byStart).reverse().slice(0,10);
   const pays=S.payments.filter(p=>p.clientId===id||p.with===id).sort((a,b)=>b.date.localeCompare(a.date));
   const notes=hist.filter(s=>s.log).slice(0,3);
-  openSheet(`${sheetHead(esc(c.name),`${KINDS[c.kind]} · ${esc(c.age)}${c.parent?` · ${esc(c.parent)}`:''}`)}
+  openSheet(`${sheetHead(esc(c.name),`${KINDS[c.kind]}${c.age?` · ${esc(c.age)}`:''}${c.parent?` · ${esc(c.parent)}`:''}${tariffOf(c).type==='split'?` · сплит, ${people(SPLIT_N)}`:''}`)}
   <div class="sheet-b">
     <div class="row"><span class="mono" style="font-size:1.05rem;user-select:all">${esc(c.phone)}</span><button class="btn sm ghost" data-act="copy" data-t="${esc(c.phone)}">${ic('copy')}Копировать</button></div>
     <div class="minis"><div class="mini"><span class="small muted">Оплачено</span><b>${cs.paid}</b></div><div class="mini"><span class="small muted">Прошло</span><b>${cs.used}</b></div><div class="mini"><span class="small muted">Пропуски</span><b>${cs.absent+cs.excused}</b></div><div class="mini"><span class="small muted">Осталось</span><b style="color:var(--${cs.lv})">${cs.remaining}</b></div></div>
@@ -852,6 +880,7 @@ function clientSheet(id){
     <p class="small muted">${cs.lastCovered?`Оплаченных занятий хватит до ${fdateS(cs.lastCovered.date)}.`:cs.remaining>0?'Оплаты хватит на все запланированные занятия.':'Следующее занятие уже не оплачено.'} Впереди ${cs.upcoming.length} ${plural(cs.upcoming.length,'занятие','занятия','занятий')}.${cs.until?` Абонемент действует до ${fdateS(cs.until)}.`:cs.remaining>0?' Абонемент без срока.':''}${cs.burned?` По истёкшим абонементам сгорело ${cs.burned}.`:''}</p>
     <label class="f" for="c-tariff">Тариф<select class="inp" id="c-tariff" data-cfield="tariff" data-cid="${id}">${tariffOptions(tariffOf(c).id)}</select></label>
     <div class="row"><button class="btn primary" data-act="new-payment" data-cid="${id}">+ Оплата</button><button class="btn" data-act="new-session" data-cid="${id}">+ Занятие</button></div>
+    ${planBlock(c)}
     <div class="blockt"><h3>Пауза</h3>${c.pause&&c.pause.to>=iso(now)
       ?`<div class="row"><span class="chip st-paused">На паузе с ${fdateS(c.pause.from)} по ${fdateS(c.pause.to)}</span><button class="btn sm ghost" data-act="pause-clear" data-cid="${id}">Снять паузу</button></div><p class="small muted">Занятия в эти дни не списываются, бот о них не напоминает${S.groups.some(g=>g.clientIds.includes(id))?', место в группе сохраняется':''}.</p>`
       :`<p class="small muted">На время болезни или отъезда: занятия за эти дни не списываются, бот о них не напоминает, место в группе сохраняется.</p>
@@ -875,8 +904,9 @@ function newSessionSheet(pre={}){
       <label class="f" for="ns-dur">Длительность<select class="inp" id="ns-dur" name="dur">${[30,45,60,90].map(m=>`<option value="${m}" ${m===DUR[type]?'selected':''}>${m} мин</option>`).join('')}</select></label></div>
     <div id="ns-who">${whoField(type,pre.cid)}</div>
     <div class="grid2"><label class="f" for="ns-place">Место<input class="inp" id="ns-place" name="place" value="${PLACE[type]}"></label>
-      <label class="f" for="ns-rep">Повтор<select class="inp" id="ns-rep" name="rep"><option value="0">Только этот день</option><option value="4">Каждую неделю, 4 недели</option><option value="8" selected>Каждую неделю, 8 недель</option></select></label></div>
-    <p class="small muted">Повторяющиеся занятия появятся в расписании сразу. Любое из них можно потом отменить отдельно. Пробное и отработка обычно разовые.</p>
+      <label class="f" for="ns-rep">Сколько тренировок<input class="inp" type="number" id="ns-rep" name="rep" min="1" max="60" value="${c&&clientStats(c.id).remaining>0?clientStats(c.id).remaining:8}"></label></div>
+    <div><span class="f">Дни недели</span>${wdChips('wd',[wd(pdate(pre.date||iso(now)))])}</div>
+    <p class="small muted">Тренировки встанут поровну на каждую неделю в отмеченные дни и закончатся на последней — без продления. Любую можно потом отменить отдельно. Пробное и отработка — 1.</p>
     <div class="row" style="justify-content:flex-end"><button type="button" class="btn ghost" data-act="close">Отмена</button><button class="btn primary" type="submit">Создать</button></div>
   </form>`,'new-s');
 }
@@ -886,7 +916,7 @@ function whoField(type,cid){
       :`<div class="match new"><span>Групп этого типа ещё нет.</span><button type="button" class="btn sm" data-act="new-group" data-type="${type}">Создать группу</button></div>`}
   const key=x=>((type==='baby')===(x.kind==='baby'))?0:1;
   const list=[...S.clients].sort((a,b)=>key(a)-key(b));
-  return `<fieldset style="border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:6px"><legend class="f" style="font-size:.84rem;color:var(--muted);font-weight:500;margin-bottom:6px">${type==='split'?'Кто придёт — отметьте двоих':'Кто придёт'}</legend><div class="checks">${list.map(c=>`<label><input type="checkbox" name="cl" value="${c.id}" ${c.id===cid?'checked':''}>${esc(c.name)} <span class="small muted">${KINDS[c.kind].toLowerCase()}</span></label>`).join('')}</div></fieldset>`;
+  return `<fieldset style="border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:6px"><legend class="f" style="font-size:.84rem;color:var(--muted);font-weight:500;margin-bottom:6px">${type==='split'?'Кто придёт — пара: один клиент на сплит или двое, считается как 2 человека':'Кто придёт'}</legend><div class="checks">${list.map(c=>`<label><input type="checkbox" name="cl" value="${c.id}" ${c.id===cid?'checked':''}>${esc(c.name)} <span class="small muted">${KINDS[c.kind].toLowerCase()}</span></label>`).join('')}</div></fieldset>`;
 }
 function newClientSheet(){
   openSheet(`${sheetHead('Новый клиент')}
@@ -908,7 +938,7 @@ function tariffExtra(t,cid,n){
   if(!t.pair&&t.id!=='family')return chips;
   const me=client(cid),sib=me?S.clients.filter(x=>x.id!==me.id&&digits(x.phone).slice(-10)===digits(me.phone).slice(-10)):[];
   const def=sib[0]?.id||'';
-  return chips+`<label class="f" for="np-with">${t.pair?'Второй участник сплита':'Второй ребёнок — оплата за двоих'}<select class="inp" id="np-with" name="with">${t.pair?'':'<option value="">Оплата только за одного</option>'}${S.clients.filter(x=>x.id!==cid).map(x=>`<option value="${x.id}" ${x.id===def?'selected':''}>${esc(x.name)}</option>`).join('')}</select></label>`;
+  return chips+`<label class="f" for="np-with">${t.pair?'Второй участник сплита':'Второй ребёнок — оплата за двоих'}<select class="inp" id="np-with" name="with">${t.pair?'<option value="">Пара в одном профиле клиента</option>':'<option value="">Оплата только за одного</option>'}${S.clients.filter(x=>x.id!==cid).map(x=>`<option value="${x.id}" ${x.id===def?'selected':''}>${esc(x.name)}</option>`).join('')}</select></label>`;
 }
 function newPaymentSheet(cid){
   const c=cid?client(cid):null;UI.pendingImg=null;
@@ -1165,6 +1195,17 @@ document.addEventListener('click',e=>{
   if(a==='copy-pay'){const c=client(t.dataset.cid),cs=clientStats(c.id),tf=tariffOf(c),who=c.parent?c.parent.split(',')[0]:c.name.split(' ')[0];
     const offer=[tf.p8?`8 занятий — ${money(tf.p8)}`:'',tf.p10?`10 занятий — ${money(tf.p10)}`:''].filter(Boolean).join(', ');
     return copyText(`Здравствуйте, ${who}! ${cs.remaining>0?`По абонементу осталось ${cs.remaining} ${plural(cs.remaining,'занятие','занятия','занятий')}`:'Оплаченные занятия закончились'}. Продлеваем? ${tf.label}: ${offer}${tf.note?` (${tf.note})`:''}. Оплата через Kaspi.`)}
+  if(a==='plan-apply'){const c=client(t.dataset.cid),p=readPlan(),tf=tariffOf(c);
+    if(!p.days.length){toast('Выберите дни','Отметьте хотя бы один день недели');return}
+    if(!p.n){toast('Сколько тренировок?','Укажите число от 1 до 60');return}
+    if(!p.time||!p.from){toast('Проверьте время и дату','Укажите, с какого дня и во сколько');return}
+    const dates=planDates(p.from,p.days,p.n),type=c.kind==='baby'?'baby':tf.type==='split'?'split':tf.type==='baby'?'baby':'individual';
+    let removed=0;if(document.getElementById('pl-replace')?.checked)planned(c.id).forEach(s=>{removed++;s.clientIds=s.clientIds.filter(x=>x!==c.id)});
+    S.sessions=S.sessions.filter(s=>s.clientIds.length||s.groupId);
+    for(const date of dates)S.sessions.push({id:uid('s'),date,start:p.time,dur:DUR[type],type,kind:null,groupId:null,clientIds:[c.id],place:PLACE[type],att:{},log:'',next:'',cancelled:false});
+    c.plan={n:p.n,days:p.days,time:p.time};S.sessions.sort(byStart);persist();
+    toast('Тренировки в расписании',`${esc(c.name.split(' ')[0])}: ${dates.length} ${plural(dates.length,'тренировка','тренировки','тренировок')}, ${daysLabel(p.days)} в ${p.time}, последняя ${fdateS(dates[dates.length-1])}${removed?`. Убрано старых: ${removed}`:''}`);
+    return clientSheet(c.id)}
   if(a==='vacation')return vacationSheet();
   if(a==='vac-apply'){const from=document.getElementById('vac-from').value,to=document.getElementById('vac-to').value;
     if(!from||!to||from>to){toast('Проверьте даты','«С» должно быть не позже «по»');return}
@@ -1198,7 +1239,9 @@ document.addEventListener('change',e=>{
   if(t.dataset.price){toast('Цена сохранена',`${esc(tariff(t.dataset.price).label)}: ${money(+t.value||0)}`);return}
   if(t.id==='ns-type'){document.getElementById('ns-who').innerHTML=whoField(t.value);document.getElementById('ns-place').value=PLACE[t.value];document.getElementById('ns-dur').value=String(DUR[t.value])}
   if(t.id==='vac-from'||t.id==='vac-to'){document.getElementById('vac-prev').innerHTML=vacPrevHTML(document.getElementById('vac-from').value,document.getElementById('vac-to').value);return}
-  if(t.id==='ns-kind'&&t.value)document.getElementById('ns-rep').value='0';
+  if(t.id==='ns-kind'&&t.value)document.getElementById('ns-rep').value='1';
+  if(t.id==='ns-date'&&t.value){const i=wd(pdate(t.value));document.querySelectorAll('#f-session [name="wd"]').forEach(x=>{if(+x.value===i)x.checked=true})}
+  if(t.closest?.('#plan'))document.getElementById('pl-info').textContent=(p=>planInfo(p.from,p.days,p.n))(readPlan());
   if(t.id==='nc-kind')document.getElementById('nc-tariff').value=defTariff(t.value);
   if(t.id==='np-tariff')setPayTariff(tariff(t.value),curCid(),true);
   if(t.id==='np-with')recalcAmount();
@@ -1226,11 +1269,12 @@ document.addEventListener('submit',e=>{
     const type=fd.get('type'),kind=fd.get('kind')||null;let clientIds,groupId=null;
     if(GROUPISH(type)){groupId=fd.get('group');if(!groupId){toast('Нет группы','Сначала создайте группу этого типа');return}clientIds=[...group(groupId).clientIds]}
     else{clientIds=fd.getAll('cl');if(!clientIds.length){toast('Выберите клиента','Отметьте хотя бы одного человека в списке «Кто придёт»');return}
-      if(type==='split'&&clientIds.length!==2){toast('Сплит — это двое','Отметьте ровно двух человек');return}}
-    const rep=+fd.get('rep'),base=pdate(fd.get('date'));
-    for(let i=0;i<(rep||1);i++)S.sessions.push({id:uid('s'),date:iso(addDays(base,i*7)),start:fd.get('start'),dur:+fd.get('dur'),type,kind,groupId,clientIds:[...clientIds],place:fd.get('place')||'',att:{},log:'',next:'',cancelled:false});
+      if(type==='split'&&clientIds.length>SPLIT_N){toast('Сплит — это двое','Отметьте одного клиента на сплит или двоих');return}}
+    const n=Math.min(60,Math.max(1,Math.floor(+fd.get('rep')||1))),base=pdate(fd.get('date'));
+    const days=[...new Set([wd(base),...fd.getAll('wd').map(Number)])],dates=n===1?[iso(base)]:planDates(iso(base),days,n),rep=dates.length;
+    for(const date of dates)S.sessions.push({id:uid('s'),date,start:fd.get('start'),dur:+fd.get('dur'),type,kind,groupId,clientIds:[...clientIds],place:fd.get('place')||'',att:{},log:'',next:'',cancelled:false});
     S.sessions.sort(byStart);persist();UI.week=Math.round((mondayOf(base)-mondayOf(new Date()))/(7*864e5));UI.selDay=wd(base);UI.view='schedule';closeSheet();
-    toast(kind?`${SKIND[kind]} ${kind==='makeup'?'создана':'занятие создано'}`:'Занятие создано',`${DAYF[wd(base)]}, ${fdate(base)}, ${fd.get('start')}${rep>1?` и ещё ${rep-1} по ${DAY[wd(base)]}`:''}`);return}
+    toast(kind?`${SKIND[kind]} ${kind==='makeup'?'создана':'занятие создано'}`:'Занятие создано',`${DAYF[wd(base)]}, ${fdate(base)}, ${fd.get('start')}${rep>1?` и ещё ${rep-1}, последнее ${fdateS(dates[rep-1])}`:''}`);return}
   if(f.id==='f-client'){
     if(digits(fd.get('phone')).length<10){toast('Проверьте номер','Нужно 10 цифр после +7');return}
     const gid=fd.get('group');
@@ -1250,7 +1294,6 @@ document.addEventListener('submit',e=>{
     if(!c){const name=(fd.get('newname')||'').trim();if(!name){toast('Укажите имя','Номер новый — введите имя клиента');return}
       c={id:uid('c'),name,phone:fmtPhone(phone),kind:fd.get('newkind')||'kid',age:'',parent:'',tariff:t?.id||defTariff(fd.get('newkind')),note:''};S.clients.push(c)}
     const w=fd.get('with')||null;
-    if(t?.pair&&!w){toast('Выберите второго участника','Сплит оплачивается за двоих');return}
     if(w&&w===c.id){toast('Один и тот же клиент','Выберите другого второго участника');return}
     const pd=fd.get('date')||iso(new Date()),term=+fd.get('term');
     const p={id:uid('p'),clientId:c.id,with:w,tariff:t?.id||null,phone:c.phone,date:pd,amount:+fd.get('amount'),sessions:+fd.get('sessions'),method:fd.get('method'),until:term?iso(addDays(pdate(pd),term)):null};
