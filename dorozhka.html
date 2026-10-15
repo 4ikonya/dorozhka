@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>Дорожка тренера</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -76,6 +77,7 @@ main{padding-block:28px 48px;padding-inline:clamp(16px,3vw,40px);max-width:1200p
 
 /* controls */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--line);background:var(--surface);padding:9px 14px;border-radius:10px;font-weight:500;line-height:1.2;white-space:nowrap}
+a.btn{color:var(--ink);text-decoration:none}
 .btn:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 .btn.primary:hover{filter:brightness(1.06)}
@@ -254,7 +256,8 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
 .att{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
 .att-row{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:6px 10px;padding:8px 0;border-top:1px solid var(--line)}
 .att-row:first-child{border-top:0}
-.att-who{display:flex;flex-direction:column;min-width:0}
+.att-who{display:flex;flex-direction:column;min-width:0;flex:1 1 9em}
+.att-who b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;flex:none}
 .seg-b{border:0;background:var(--surface);padding:7px 10px;font-size:.84rem;color:var(--muted)}
 .seg-b+.seg-b{border-left:1px solid var(--line)}
@@ -776,10 +779,9 @@ function vPlan(){
     'Напоминания приходят только вам в Telegram. Для клиента есть готовый текст о продлении с ценами из прайса.',
     'Заметка «к следующему разу» сама появляется на следующем занятии этого клиента или группы.',
     'Клик по пустому месту в расписании создаёт занятие на это время.','Отчёт по клиентам копируется в Excel одной кнопкой.'];
-  const more=[['Сразу после MVP','Отметка посещения прямо из Telegram: бот после занятия присылает кнопки «был / пропуск».'],['Сразу после MVP','Заморозка абонемента на время болезни: срок сдвигается на число дней заморозки.'],
-    ['Сразу после MVP','Отпуск тренера: отменить занятия за период и продлить всем абонементы.'],['Потом','Лист ожидания: кто хочет в группу, когда освободится одно из пяти мест.'],
+  const more=[['Следующее','Лист ожидания: кто хочет в группу, когда освободится одно из пяти мест.'],['Следующее','Удаление и архив групп.'],
     ['Потом','Перенос занятия перетаскиванием в расписании.'],['Потом','Навыки ребёнка: погружение, скольжение, 25 м кролем. Отчёт-открытка для родителей.'],
-    ['Потом','Время на 25/50 м с секундомером и график личных рекордов.'],['Потом','Распознавание суммы и даты с фото чека Kaspi.'],['Потом','Доход по месяцам и сравнение с прошлым месяцем.']];
+    ['Потом','Время на 25/50 м с секундомером и график личных рекордов.']];
   const priceRows=Object.entries(TYPES).map(([k,v])=>{const ts=S.prices.filter(t=>t.type===k);if(!ts.length)return '';
     return `<tr><td colspan="4" class="grp"><span class="chip t-${k}">${v.label}</span></td></tr>`+ts.map(t=>`<tr><td style="white-space:normal">${esc(t.label)}${t.note?`<br><span class="small muted">${t.note}</span>`:''}</td>${['one','p8','p10'].map(f=>`<td class="n">${t[f]!=null?`<input class="inp mono pinp" type="number" step="500" min="0" id="pr-${t.id}-${f}" value="${t[f]}" data-price="${t.id}" data-pf="${f}" aria-label="${esc(t.label)}, ${f==='one'?'разовое':f==='p8'?'8 занятий':'10 занятий'}">`:'<span class="muted">—</span>'}</td>`).join('')}</tr>`).join('')}).join('');
   return `<div class="page-head"><div><h1>Стек и идеи</h1><p class="sub">Настройки, прайс-лист, предлагаемый стек и что добавить дальше</p></div></div>
@@ -1053,7 +1055,7 @@ function revenueHTML(){
   const typeRows=Object.entries(types).sort((a,b)=>b[1]-a[1]).map(([t,s])=>`<span class="row" style="gap:6px"><span class="chip t-${t}">${TYPES[t]?.label||'Без тарифа'}</span><span class="mono small">${money(s)}</span></span>`).join('');
   return `<div class="panel" style="margin-bottom:20px"><div class="panel-h"><h2>Доход по месяцам</h2><button class="btn sm ghost" data-act="copy-revenue">${ic('copy')}Для Excel</button></div>
     <div class="stats" style="border:0;border-radius:0;margin:0;border-bottom:1px solid var(--line)">
-      <div class="stat"><span class="eyebrow">${MON_P[cur.m][0].toUpperCase()+MON_P[cur.m].slice(1)}</span><b>${money(cur.sum)}</b><span class="small muted">${diff===null?'в прошлом месяце оплат не было':`${diff>=0?'+':''}${diff}% к ${MON_S[prev.m]}`}</span></div>
+      <div class="stat"><span class="eyebrow">В ${MON_P[cur.m]}</span><b>${money(cur.sum)}</b><span class="small muted">${diff===null?'в прошлом месяце оплат не было':`${diff>=0?'+':''}${diff}% к ${MON_S[prev.m]}`}</span></div>
       <div class="stat"><span class="eyebrow">За 12 месяцев</span><b>${money(tot)}</b><span class="small muted">${cnt} ${plural(cnt,'оплата','оплаты','оплат')}</span></div>
       <div class="stat"><span class="eyebrow">Средний чек</span><b>${money(cnt?tot/cnt:0)}</b><span class="small muted">за 12 месяцев</span></div>
       <div class="stat"><span class="eyebrow">Новых клиентов</span><b>${cur.newC}</b><span class="small muted">в ${MON_P[cur.m]}, в ${MON_P[prev.m]} — ${prev.newC}</span></div></div>
