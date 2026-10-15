@@ -1,0 +1,11 @@
+data/
+telegram-token.txt
+cloud/web/
+cloud/supabase/.temp/
+cloud/supabase/.branches/
+node_modules/
+.vercel/
+.claude/
+.DS_Store
+supabase/.temp/
+cloud/supabase/functions/_shared/

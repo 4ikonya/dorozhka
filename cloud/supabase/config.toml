@@ -1,0 +1,16 @@
+project_id = "dorozhka"
+
+[auth]
+site_url = "https://dorozhka.vercel.app"
+additional_redirect_urls = ["https://dorozhka.vercel.app", "https://dorozhka.vercel.app/"]
+# One coach only: nobody can sign up. The coach is invited once from the Supabase dashboard.
+enable_signup = false
+
+# This switch is the email login itself (magic link), not sign-ups: it must stay on.
+[auth.email]
+enable_signup = true
+
+# The function checks its own callers: the coach's login token, Telegram's secret
+# webhook path, or the cron secret.
+[functions.telegram]
+verify_jwt = false

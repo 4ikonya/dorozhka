@@ -1,0 +1,13 @@
+{
+  "name": "dorozhka",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server/server.mjs",
+    "build:cloud": "node cloud/build.mjs"
+  },
+  "devDependencies": {
+    "supabase": "^2.121.0",
+    "vercel": "^64.2.0"
+  }
+}
