@@ -42,7 +42,8 @@ function prevNote(S, s) {
 export function remaining(S, cid) {
   const charged = (a) => a === 'present' || (a === 'absent' && S.settings?.chargeNoShow !== false);
   let used = 0;
-  for (const s of S.sessions) if (!s.cancelled && s.clientIds.includes(cid) && charged(s.att?.[cid])) used++;
+  // A trial session is paid separately or free, never taken from a package (same as the app).
+  for (const s of S.sessions) if (!s.cancelled && s.kind !== 'trial' && s.clientIds.includes(cid) && charged(s.att?.[cid])) used++;
   return S.payments.filter((p) => p.clientId === cid || p.with === cid).reduce((t, p) => t + p.sessions, 0) - used;
 }
 function needPayment(S, wnow) {

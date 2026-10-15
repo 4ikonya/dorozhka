@@ -516,7 +516,8 @@ const pkgs=t=>[t.one?[1,'Разовое']:null,t.p8?[8,'8 занятий']:null,
 const tariffOptions=sel=>Object.entries(TYPES).map(([k,v])=>{const ts=S.prices.filter(t=>t.type===k);return ts.length?`<optgroup label="${v.label}">${ts.map(t=>`<option value="${t.id}" ${t.id===sel?'selected':''}>${esc(t.label)}</option>`).join('')}</optgroup>`:''}).join('');
 const trialOnly=cs=>cs.upcoming.length>0&&cs.upcoming.every(s=>s.kind==='trial');
 const bTitle=s=>(s.kind?SKIND[s.kind]+' · ':'')+sTitle(s);
-function charged(s,cid){const a=s.att[cid];return a==='present'||(a==='absent'&&S.settings.chargeNoShow)}
+// A trial session is paid separately or free, never taken from a package.
+function charged(s,cid){if(s.kind==='trial')return false;const a=s.att?.[cid];return a==='present'||(a==='absent'&&S.settings.chargeNoShow)}
 // c.pause is the current or next pause; finished parts move to c.pauses so old sessions stay paused.
 const pausesOf=c=>[...(c?.pauses||[]),...(c?.pause?[c.pause]:[])];
 const pauseAt=(c,date)=>pausesOf(c).find(p=>p.from<=date&&date<=p.to);
@@ -544,8 +545,8 @@ function clientStats(cid){
   const remaining=active.reduce((t,x)=>t+x.left,0)-debt;
   const aUsed=aPaid-Math.max(0,remaining);
   const until=active.filter(x=>x.left>0&&x.p.until).map(x=>x.p.until).sort()[0]||null;
-  const lastCovered=remaining>0?upcoming[Math.min(remaining,upcoming.length)-1]:null;
-  const firstUnpaid=remaining>=0?upcoming[remaining]:upcoming[0];
+  const paidUp=upcoming.filter(s=>s.kind!=='trial'),lastCovered=remaining>0&&paidUp.length?paidUp[Math.min(remaining,paidUp.length)-1]:null;
+  const firstUnpaid=remaining>=0?paidUp[remaining]:paidUp[0];
   const lv=remaining<=0?'bad':remaining<=2?'warn':'ok';
   return {paid,aPaid,aUsed,debt:Math.max(0,-remaining),used:usedS.length,present,absent,excused,remaining,burned,until,upcoming,lastCovered,firstUnpaid,lv};
 }
@@ -819,7 +820,7 @@ function sessionSheet(id){
   const st=sStatus(s),pn=prevNote(s),d=pdate(s.date),chips=s.type==='baby'?BABY_CHIPS:SWIM_CHIPS;
   const rows=s.clientIds.map(cid=>{const c=client(cid),cs=clientStats(cid),a=s.att[cid]||'';
     if(!a&&isPausedC(c,s.date))return `<li class="att-row"><div class="att-who"><b>${esc(c.name)}</b><span class="small muted">не списывается</span></div><span class="chip st-paused">Пауза до ${fdateS(pauseAt(c,s.date).to)}</span></li>`;
-    return `<li class="att-row"><div class="att-who"><b>${esc(c.name)}</b><span class="small muted">${remLabel(cs)}</span></div><div class="seg" role="group" aria-label="Посещение: ${esc(c.name)}">${Object.keys(ATT).map(v=>`<button type="button" class="seg-b ${a===v?'on '+v:''}" data-act="att" data-sid="${s.id}" data-cid="${cid}" data-v="${v}" aria-pressed="${a===v}">${ATT[v]}</button>`).join('')}</div></li>`}).join('');
+    return `<li class="att-row"><div class="att-who"><b>${esc(c.name)}</b><span class="small muted">${s.kind==='trial'?'пробное — не списывается':remLabel(cs)}</span></div><div class="seg" role="group" aria-label="Посещение: ${esc(c.name)}">${Object.keys(ATT).map(v=>`<button type="button" class="seg-b ${a===v?'on '+v:''}" data-act="att" data-sid="${s.id}" data-cid="${cid}" data-v="${v}" aria-pressed="${a===v}">${ATT[v]}</button>`).join('')}</div></li>`}).join('');
   openSheet(`${sheetHead(esc(sTitle(s)),`${DAYF[wd(d)]}, ${fdate(d)} · <span class="mono">${s.start}–${hm(endDT(s))}</span> · ${esc(s.place)}`)}
   <div class="sheet-b">
     <div class="row"><span class="chip t-${s.type}">${TYPES[s.type].label}</span>${s.kind?`<span class="chip k-${s.kind}">${SKIND[s.kind]}</span>`:''}<span class="chip st-${st}">${ST[st]}</span></div>
