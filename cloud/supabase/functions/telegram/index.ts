@@ -1,10 +1,10 @@
 // Telegram for «Дорожка» in the cloud. One function, four kinds of callers:
 //   POST /telegram/tick            — pg_cron every minute (x-cron-secret, checked by the database): sends due reminders
-//   POST /telegram/hook/<secret>   — Telegram webhook: /start links the chat, /today, /next, login confirm
+//   POST /telegram/hook/<secret>   — Telegram webhook: /start links the chat, /today, /next, /receipts, login confirm
 //   POST /telegram/login/start|poll — the login screen: sign in by confirming in the coach's bot
 //   POST /telegram/status|connect|test|disconnect — the signed-in coach from the app
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
-import { applyAttendance, attendanceView, dayText, dueMessages, nextText, startText, wallNow } from '../_shared/schedule.mjs';
+import { applyAttendance, attendanceView, dayText, dueMessages, nextText, photoForms, receiptsReport, receiptsSoFar, startText, textChunks, wallNow } from '../_shared/schedule.mjs';
 
 const SB_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -29,6 +29,15 @@ async function tg(token: string, method: string, body: Record<string, unknown> =
   if (!out.ok) throw new Error(out.description || 'Ошибка Telegram');
   return out.result;
 }
+// Long text in parts, then receipt photos as albums of up to 10. A failed album is logged, the rest still go out.
+async function sendReport(token: string, chatId: number, m: { text: string; photos?: { img: string; caption: string }[] }) {
+  for (const part of textChunks(m.text)) await tg(token, 'sendMessage', { chat_id: chatId, text: part });
+  for (const fd of photoForms(chatId, m.photos || [])) {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMediaGroup`, { method: 'POST', body: fd });
+    const out = await res.json().catch(() => ({ ok: false, description: 'Telegram ответил непонятно' }));
+    if (!out.ok) console.error(`telegram receipts album: ${out.description}`);
+  }
+}
 async function stateOf(owner: string) {
   const { data } = await admin.from('app_state').select('data').eq('owner', owner).maybeSingle();
   return data?.data ?? null;
@@ -50,7 +59,8 @@ async function tick() {
       const { error } = await admin.from('sent_reminders').insert({ owner: l.owner, key: m.key });
       if (error) continue;
       try {
-        await tg(l.token, 'sendMessage', { chat_id: l.chat_id, text: m.text, ...(m.reply_markup ? { reply_markup: m.reply_markup } : {}) });
+        if (m.photos) await sendReport(l.token, l.chat_id as number, m);
+        else await tg(l.token, 'sendMessage', { chat_id: l.chat_id, text: m.text, ...(m.reply_markup ? { reply_markup: m.reply_markup } : {}) });
         sent++;
       } catch (e) {
         await admin.from('sent_reminders').delete().eq('owner', l.owner).eq('key', m.key);
@@ -170,6 +180,7 @@ async function webhook(secret: string, update: any) {
   } else if (Number(l.chat_id) === m.chat.id && S) {
     if (m.text.startsWith('/today')) await tg(l.token, 'sendMessage', { chat_id: m.chat.id, text: dayText(S, nowFor(S)) });
     else if (m.text.startsWith('/next')) await tg(l.token, 'sendMessage', { chat_id: m.chat.id, text: nextText(S, nowFor(S)) });
+    else if (m.text.startsWith('/receipts')) { const { from, to } = receiptsSoFar(nowFor(S)); await sendReport(l.token, m.chat.id, receiptsReport(S, from, to)); }
   }
 }
 

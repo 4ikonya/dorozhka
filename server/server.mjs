@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { DEFAULT_TZ, applyAttendance, attendanceView, dueMessages, dayText, nextText, startText, wallNow } from '../shared/schedule.mjs';
+import { DEFAULT_TZ, applyAttendance, attendanceView, dueMessages, dayText, nextText, photoForms, receiptsReport, receiptsSoFar, startText, textChunks, wallNow } from '../shared/schedule.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT) || 4318;
@@ -69,6 +69,15 @@ const wasSent = (key) => !!db.prepare('SELECT 1 FROM sent WHERE key = ?').get(ke
 const markSent = (key) => db.prepare('INSERT OR IGNORE INTO sent (key, at) VALUES (?, ?)').run(key, new Date().toISOString());
 const unmarkSent = (key) => db.prepare('DELETE FROM sent WHERE key = ?').run(key);
 
+// Long text in parts, then receipt photos as albums of up to 10.
+async function sendReport(m) {
+  const { token, chat_id } = tgRow();
+  for (const part of textChunks(m.text)) await tg('sendMessage', { chat_id, text: part });
+  for (const fd of photoForms(chat_id, m.photos || [])) {
+    const json = await (await fetch(`${TG_API}/bot${token}/sendMediaGroup`, { method: 'POST', body: fd })).json().catch(() => ({ ok: false }));
+    if (!json.ok) console.error(`[telegram] receipts album: ${json.description || 'ошибка'}`);
+  }
+}
 async function deliver(key, text, extra = {}) {
   markSent(key);
   try { await tg('sendMessage', { chat_id: tgRow().chat_id, text, ...extra }); console.log(`[telegram] ${key}`); }
@@ -79,7 +88,11 @@ async function tick() {
   if (!t.token || !t.chat_id) return;
   const { state: S } = readState();
   if (!S) return;
-  for (const m of dueMessages(S, wnow(S), wasSent)) await deliver(m.key, m.text, m.reply_markup ? { reply_markup: m.reply_markup } : {});
+  for (const m of dueMessages(S, wnow(S), wasSent)) {
+    if (!m.photos) { await deliver(m.key, m.text, m.reply_markup ? { reply_markup: m.reply_markup } : {}); continue; }
+    markSent(m.key);
+    try { await sendReport(m); console.log(`[telegram] ${m.key}`); } catch (e) { unmarkSent(m.key); console.error(`[telegram] ${m.key}: ${e.message}`); }
+  }
 }
 // A press on "был / не предупредил / предупредил" under an attendance message.
 async function onButton(q) {
@@ -114,6 +127,7 @@ async function pollLoop() {
           if (!S) continue;
           if (m.text.startsWith('/today')) await send(dayText(S, wnow()));
           else if (m.text.startsWith('/next')) await send(nextText(S, wnow()));
+          else if (m.text.startsWith('/receipts')) { const { from, to } = receiptsSoFar(wnow(S)); await sendReport(receiptsReport(S, from, to)); }
         }
       }
     } catch (e) {

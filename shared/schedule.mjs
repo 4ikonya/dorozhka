@@ -76,7 +76,7 @@ export function nextText(S, wnow) {
 }
 export function startText(S) {
   const lead = LEAD[S?.settings?.remindCoach || '2h'] || 120;
-  return `Готово. Буду напоминать о занятиях за ${lead >= 60 ? `${lead / 60} ч` : `${lead} мин`} и присылать сводку дня в 7:00.\nКоманды: /today — занятия на сегодня, /next — ближайшее.`;
+  return `Готово. Буду напоминать о занятиях за ${lead >= 60 ? `${lead / 60} ч` : `${lead} мин`} и присылать сводку дня в 7:00.\nКаждое 20-е число пришлю чеки за месяц (с 20-го по 19-е).\nКоманды: /today — занятия на сегодня, /next — ближайшее, /receipts — чеки с 20-го числа по сегодня.`;
 }
 // c.pause is the current or next pause; c.pauses keeps the finished ones (same as the app).
 export const isPaused = (c, date) => [...(c?.pauses || []), ...(c?.pause ? [c.pause] : [])].some((p) => p.from <= date && date <= p.to);
@@ -165,6 +165,65 @@ export function syncMakeup(S, s) {
   return add;
 }
 
+const money = (n) => `${String(Math.round(+n || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')} ₸`;
+const shortDate = (iso) => { const d = dateOf(iso); return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`; };
+export const RECEIPT_DAY = 20;
+/** The receipts month that ends the day before `wnow`'s 20th: from the 20th of the previous month to the 19th. */
+export function receiptsPeriod(wnow) {
+  const y = wnow.getUTCFullYear(), m = wnow.getUTCMonth();
+  return { from: dayKey(new Date(Date.UTC(y, m - 1, RECEIPT_DAY))), to: dayKey(new Date(Date.UTC(y, m, RECEIPT_DAY - 1))) };
+}
+/** Since the last 20th up to today, for the /receipts command. */
+export function receiptsSoFar(wnow) {
+  const y = wnow.getUTCFullYear(), m = wnow.getUTCMonth(), back = wnow.getUTCDate() < RECEIPT_DAY ? 1 : 0;
+  return { from: dayKey(new Date(Date.UTC(y, m - back, RECEIPT_DAY))), to: dayKey(wnow) };
+}
+/**
+ * Every payment dated within [from, to]: a text list with the total, and the receipt photos (JPEG/PNG/WebP only;
+ * payments without a photo are listed as «без фото»). Photos keep the list number in the caption.
+ */
+export function receiptsReport(S, from, to) {
+  const pays = (S.payments || []).filter((p) => p.date >= from && p.date <= to).sort((a, b) => a.date.localeCompare(b.date));
+  const name = (id) => S.clients.find((c) => c.id === id)?.name || 'Без клиента';
+  const head = `Чеки с ${shortDate(from)} по ${shortDate(to)}`;
+  if (!pays.length) return { text: `${head}\nОплат за этот период нет.`, photos: [] };
+  const photo = (p) => /^data:image\/(jpeg|png|webp);base64,/.test(p.img || '');
+  const lines = pays.map((p, i) => `${i + 1}. ${shortDate(p.date)} · ${name(p.clientId)}${p.with ? ` и ${name(p.with)}` : ''} · ${money(p.amount)} · ${p.method || '—'} · ${p.sessions} зан.${photo(p) ? '' : ' · без фото'}`);
+  const total = pays.reduce((t, p) => t + (+p.amount || 0), 0), withPhoto = pays.filter(photo).length;
+  return {
+    text: `${head}\nВсего ${pays.length} ${pays.length % 10 === 1 && pays.length % 100 !== 11 ? 'оплата' : [2, 3, 4].includes(pays.length % 10) && ![12, 13, 14].includes(pays.length % 100) ? 'оплаты' : 'оплат'} на ${money(total)}, фото чеков: ${withPhoto}\n\n${lines.join('\n')}`,
+    photos: pays.map((p, i) => ({ p, i })).filter(({ p }) => photo(p)).map(({ p, i }) => ({ img: p.img, caption: lines[i] })),
+  };
+}
+/** Telegram limits: 4096 characters per message, 10 photos per album. */
+export function textChunks(text, max = 4000) {
+  const out = [];
+  let cur = '';
+  for (const line of text.split('\n')) {
+    if (cur && (cur + '\n' + line).length > max) { out.push(cur); cur = line; } else cur = cur ? `${cur}\n${line}` : line;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+/** sendMediaGroup bodies (FormData, at most 10 photos each) for the receipt photos. */
+export function photoForms(chatId, photos) {
+  const forms = [];
+  for (let i = 0; i < photos.length; i += 10) {
+    const fd = new FormData(), media = [];
+    photos.slice(i, i + 10).forEach((ph, j) => {
+      const [, type, b64] = ph.img.match(/^data:(image\/\w+);base64,(.*)$/);
+      const bin = atob(b64), bytes = new Uint8Array(bin.length);
+      for (let k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k);
+      fd.append(`f${j}`, new Blob([bytes], { type }), `receipt${i + j + 1}.${type.split('/')[1]}`);
+      media.push({ type: 'photo', media: `attach://f${j}`, caption: ph.caption.slice(0, 1000) });
+    });
+    fd.append('chat_id', String(chatId));
+    fd.append('media', JSON.stringify(media));
+    forms.push(fd);
+  }
+  return forms;
+}
+
 /** Messages that are due now and not yet sent, each with the key that marks it as sent. */
 export function dueMessages(S, wnow, wasSent) {
   const out = [];
@@ -183,6 +242,12 @@ export function dueMessages(S, wnow, wasSent) {
     if (hm(wnow) >= '21:00' && open.length && !wasSent(`attnudge:${today}`)) {
       out.push({ key: `attnudge:${today}`, text: `Не отмечено посещение: ${open.map((s) => `${s.start} ${titleOf(S, s)}`).join(', ')}. Кнопки — в сообщениях выше.` });
     }
+  }
+  // On the 20th from 09:00 (also on vacation days; caught up on the 21st–22nd if the bot was down): every receipt from the previous 20th to the 19th.
+  const rk = `receipts:${today.slice(0, 7)}`;
+  if (S.settings?.monthlyReceipts !== false && (wnow.getUTCDate() > RECEIPT_DAY || hm(wnow) >= '09:00') && wnow.getUTCDate() >= RECEIPT_DAY && wnow.getUTCDate() <= RECEIPT_DAY + 2 && !wasSent(rk)) {
+    const { from, to } = receiptsPeriod(wnow);
+    out.push({ key: rk, ...receiptsReport(S, from, to) });
   }
   if (onVacation(S, today)) return out;
   for (const s of S.sessions) {
