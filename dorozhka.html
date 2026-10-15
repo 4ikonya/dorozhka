@@ -347,7 +347,9 @@ const SKIND={trial:'Пробное',makeup:'Отработка'};
 const DUR={baby:30,individual:45,split:45,minigroup:45,group:45};
 const PLACE={baby:'Малая чаша',individual:'Дорожка 5',split:'Дорожка 4',minigroup:'Дорожка 3',group:'Дорожка 2'};
 const KINDS={baby:'Грудничок',kid:'Ребёнок',adult:'Взрослый'};
-const GROUP_MIN=2,GROUP_MAX=5;
+// A group needs at least one person and has no upper limit.
+const GROUP_MIN=1;
+const people=n=>`${n} ${plural(n,'человек','человека','человек')}`;
 /* The coach's price list. Family price is per child; split price is for the pair. */
 const PRICES=[
   {id:'adult-ind',label:'Взрослый, персонально',type:'individual',one:8000,p8:65000,p10:75000},
@@ -657,8 +659,8 @@ function vSchedule(){
 }
 
 function vClients(){
-  return `<div class="page-head"><div><h1>Клиенты</h1><p class="sub">${S.clients.length} ${plural(S.clients.length,'клиент','клиента','клиентов')} · ${S.groups.length} ${plural(S.groups.length,'группа','группы','групп')}, в каждой от ${GROUP_MIN} до ${GROUP_MAX} человек</p></div><div class="row"><button class="btn" data-act="new-group">+ Группа</button><button class="btn primary" data-act="new-client">+ Клиент</button></div></div>
-  <div class="groups">${S.groups.map(g=>`<button class="ccard" data-act="open-group" data-id="${g.id}"><div class="top"><div style="min-width:0"><div class="nm">${esc(g.name)}</div><div class="small muted">${g.clientIds.map(id=>esc((client(id)?.name||'').split(' ')[0])).join(', ')||'Пока никого'}</div></div><span class="chip t-${g.type||'group'}">${g.clientIds.length} из ${GROUP_MAX}</span></div></button>`).join('')}</div>
+  return `<div class="page-head"><div><h1>Клиенты</h1><p class="sub">${S.clients.length} ${plural(S.clients.length,'клиент','клиента','клиентов')} · ${S.groups.length} ${plural(S.groups.length,'группа','группы','групп')}</p></div><div class="row"><button class="btn" data-act="new-group">+ Группа</button><button class="btn primary" data-act="new-client">+ Клиент</button></div></div>
+  <div class="groups">${S.groups.map(g=>`<button class="ccard" data-act="open-group" data-id="${g.id}"><div class="top"><div style="min-width:0"><div class="nm">${esc(g.name)}</div><div class="small muted">${g.clientIds.map(id=>esc((client(id)?.name||'').split(' ')[0])).join(', ')||'Пока никого'}</div></div><span class="chip t-${g.type||'group'}">${people(g.clientIds.length)}</span></div></button>`).join('')}</div>
   <div class="toolbar"><input class="inp" id="c-search" type="search" placeholder="Имя, телефон или родитель" value="${esc(UI.cQuery)}" aria-label="Поиск клиента">
     <div class="chips">${[['all','Все'],['baby','Грудничковые'],['adult','Взрослые'],['kid','Дети'],['due','Нужна оплата']].map(([k,l])=>`<button class="fchip" data-act="cfilter" data-k="${k}" aria-pressed="${UI.cFilter===k}">${l}</button>`).join('')}</div></div>
   <div class="clist" id="clist">${clientList()}</div>`;
@@ -745,7 +747,7 @@ function chart(w){
 
 const FMAP=[
   ['Время, день, недели, повторы','Postgres timestamptz + rrule + date-fns (ru)','Занятие хранится с точным временем и часовым поясом. Шаблон «Пн/Ср/Пт 18:00» разворачивается на 8 недель, перенос одного занятия не ломает серию, неделя начинается с понедельника.'],
-  ['Грудничковое, индивидуальное, сплит, мини-группа, группа','Справочник типов + таблица groups с ограничением 2–5','Лимит «не больше 5» стоит в самой базе: шестого не добавить даже с двух устройств одновременно.'],
+  ['Грудничковое, индивидуальное, сплит, мини-группа, группа','Справочник типов + таблица groups','Состав группы не ограничен: от одного человека и больше.'],
   ['Отметка присутствия у бассейна','TanStack Query с мгновенным откликом + кэш PWA','Нажатие срабатывает сразу даже при слабой сети, данные досылаются, когда связь появится.'],
   ['Сколько прошло и сколько осталось','SQL-функция в Supabase','Один расчёт для экранов, бота и отчётов — цифры везде совпадают. Покрыта тестами.'],
   ['Чеки и номера клиентов','Supabase Storage + телефон в формате +7XXXXXXXXXX','Фото чеков приватны. 8 707… и +7 707… считаются одним номером, на один номер можно записать семью.'],
@@ -770,7 +772,7 @@ function vPlan(){
   const did=['Ваш прайс-лист встроен: выбираете тариф и пакет (разовое, 8 или 10), сумма подставляется сама. Цены можно поправить в таблице слева.',
     'Сплит и «двое детей из одной семьи»: один чек на двоих, занятия начисляются обоим.',
     'На один номер можно записать нескольких клиентов — родителя и детей. При оплате выбираете, за кого чек.',
-    'Группы от 2 до 5 человек: шестого добавить нельзя, свободные места видны на карточке группы.',
+    'В группе от одного человека, без ограничения сверху.',
     'Пробные занятия и отработки помечены в расписании. Перед пробным в «Что сделать» появляется подсказка предложить абонемент.',
     'Главный экран «Сегодня»: следующее занятие, заметка с прошлого раза и список дел.',
     'Посещение отмечается у каждого отдельно: был, не предупредил или предупредил. Сгорает только «не предупредил».',
@@ -779,7 +781,7 @@ function vPlan(){
     'Напоминания приходят только вам в Telegram. Для клиента есть готовый текст о продлении с ценами из прайса.',
     'Заметка «к следующему разу» сама появляется на следующем занятии этого клиента или группы.',
     'Клик по пустому месту в расписании создаёт занятие на это время.','Отчёт по клиентам копируется в Excel одной кнопкой.'];
-  const more=[['Следующее','Лист ожидания: кто хочет в группу, когда освободится одно из пяти мест.'],['Следующее','Удаление и архив групп.'],
+  const more=[['Следующее','Лист ожидания: кто хочет в группу, если она уже набрана.'],['Следующее','Удаление и архив групп.'],
     ['Потом','Перенос занятия перетаскиванием в расписании.'],['Потом','Навыки ребёнка: погружение, скольжение, 25 м кролем. Отчёт-открытка для родителей.'],
     ['Потом','Время на 25/50 м с секундомером и график личных рекордов.']];
   const priceRows=Object.entries(TYPES).map(([k,v])=>{const ts=S.prices.filter(t=>t.type===k);if(!ts.length)return '';
@@ -880,7 +882,7 @@ function newSessionSheet(pre={}){
 }
 function whoField(type,cid){
   if(GROUPISH(type)){const gs=S.groups.filter(g=>(g.type||'group')===type);
-    return gs.length?`<label class="f" for="ns-group">${TYPES[type].label}<select class="inp" id="ns-group" name="group">${gs.map(g=>`<option value="${g.id}">${esc(g.name)} · ${g.clientIds.length} из ${GROUP_MAX}</option>`).join('')}</select></label>`
+    return gs.length?`<label class="f" for="ns-group">${TYPES[type].label}<select class="inp" id="ns-group" name="group">${gs.map(g=>`<option value="${g.id}">${esc(g.name)} · ${people(g.clientIds.length)}</option>`).join('')}</select></label>`
       :`<div class="match new"><span>Групп этого типа ещё нет.</span><button type="button" class="btn sm" data-act="new-group" data-type="${type}">Создать группу</button></div>`}
   const key=x=>((type==='baby')===(x.kind==='baby'))?0:1;
   const list=[...S.clients].sort((a,b)=>key(a)-key(b));
@@ -896,7 +898,7 @@ function newClientSheet(){
     <div class="grid2"><label class="f" for="nc-age">Возраст<input class="inp" id="nc-age" name="age" placeholder="9 мес. или 7 лет"></label>
       <label class="f" for="nc-parent">Родитель<input class="inp" id="nc-parent" name="parent" placeholder="Имя, кем приходится"></label></div>
     <div class="grid2"><label class="f" for="nc-tariff">Тариф<select class="inp" id="nc-tariff" name="tariff">${tariffOptions('kid-ind')}</select></label>
-      <label class="f" for="nc-group">Группа<select class="inp" id="nc-group" name="group"><option value="">Без группы</option>${S.groups.map(g=>`<option value="${g.id}" ${g.clientIds.length>=GROUP_MAX?'disabled':''}>${esc(g.name)} · ${g.clientIds.length} из ${GROUP_MAX}</option>`).join('')}</select></label></div>
+      <label class="f" for="nc-group">Группа<select class="inp" id="nc-group" name="group"><option value="">Без группы</option>${S.groups.map(g=>`<option value="${g.id}">${esc(g.name)} · ${people(g.clientIds.length)}</option>`).join('')}</select></label></div>
     <label class="f" for="nc-note">Заметка<textarea class="inp" id="nc-note" name="note" placeholder="Страхи, цели, здоровье"></textarea></label>
     <div class="row" style="justify-content:flex-end"><button type="button" class="btn ghost" data-act="close">Отмена</button><button class="btn primary" type="submit">Добавить</button></div>
   </form>`,'new-c');
@@ -945,11 +947,11 @@ function receiptSheet(id){const p=S.payments.find(x=>x.id===id);if(!p)return;con
   <div class="sheet-f"><button class="btn ghost danger" data-act="del-payment" data-id="${p.id}">Удалить чек</button><button class="btn" data-act="open-client" data-id="${p.clientId}">Карточка клиента</button></div>`,'r:'+id)}
 function groupSheet(id,type){
   const g=id?group(id):null,gt=g?.type||type||'group';
-  openSheet(`${sheetHead(g?esc(g.name):'Новая группа',`От ${GROUP_MIN} до ${GROUP_MAX} человек`)}
+  openSheet(`${sheetHead(g?esc(g.name):'Новая группа','От одного человека, без ограничения')}
   <form id="f-group" class="sheet-b" autocomplete="off" data-id="${g?.id||''}">
     <div class="grid2"><label class="f" for="ng-name">Название<input class="inp" id="ng-name" name="name" value="${esc(g?.name||'')}" placeholder="Например, Акулы · 10–12 лет" required ${g?'':'data-autofocus'}></label>
       <label class="f" for="ng-type">Тип<select class="inp" id="ng-type" name="type"><option value="group" ${gt==='group'?'selected':''}>Групповое</option><option value="minigroup" ${gt==='minigroup'?'selected':''}>Мини-группа</option></select></label></div>
-    <fieldset style="border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:6px"><legend class="f" style="font-size:.84rem;color:var(--muted);font-weight:500;margin-bottom:6px">Участники · <span id="ng-count">${g?g.clientIds.length:0} из ${GROUP_MAX}</span></legend>
+    <fieldset style="border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:6px"><legend class="f" style="font-size:.84rem;color:var(--muted);font-weight:500;margin-bottom:6px">Участники · <span id="ng-count">${people(g?g.clientIds.length:0)}</span></legend>
       <div class="checks">${S.clients.map(c=>`<label><input type="checkbox" name="m" value="${c.id}" ${g?.clientIds.includes(c.id)?'checked':''}>${esc(c.name)} <span class="small muted">${KINDS[c.kind].toLowerCase()}</span></label>`).join('')}</div></fieldset>
     ${g?'<p class="small muted">Новый состав применится к будущим занятиям группы. Прошедшие останутся как были.</p>':''}
     <div class="row" style="justify-content:flex-end"><button type="button" class="btn ghost" data-act="close">Отмена</button><button class="btn primary" type="submit">${g?'Сохранить':'Создать группу'}</button></div>
@@ -1201,8 +1203,7 @@ document.addEventListener('change',e=>{
   if(t.id==='np-tariff')setPayTariff(tariff(t.value),curCid(),true);
   if(t.id==='np-with')recalcAmount();
   if(t.name==='cid'&&t.closest('#f-pay'))applyPayClient();
-  if(t.name==='m'&&t.closest('#f-group')){const f=t.closest('form');if(f.querySelectorAll('[name="m"]:checked').length>GROUP_MAX){t.checked=false;toast(`В группе максимум ${GROUP_MAX} человек`,'Уберите кого-то, чтобы добавить нового')}
-    document.getElementById('ng-count').textContent=`${f.querySelectorAll('[name="m"]:checked').length} из ${GROUP_MAX}`}
+  if(t.name==='m'&&t.closest('#f-group')){const f=t.closest('form');    document.getElementById('ng-count').textContent=people(f.querySelectorAll('[name="m"]:checked').length)}
   if(t.id==='ob-file'&&t.files[0]){t.files[0].text().then(txt=>{const d=JSON.parse(txt);
       if(!Array.isArray(d.clients)||!Array.isArray(d.sessions)||!Array.isArray(d.payments))throw new Error('bad');
       S=d;if(!S.prices)S.prices=PRICES.map(x=>({...x}));persist();closeSheet();
@@ -1232,16 +1233,16 @@ document.addEventListener('submit',e=>{
     toast(kind?`${SKIND[kind]} ${kind==='makeup'?'создана':'занятие создано'}`:'Занятие создано',`${DAYF[wd(base)]}, ${fdate(base)}, ${fd.get('start')}${rep>1?` и ещё ${rep-1} по ${DAY[wd(base)]}`:''}`);return}
   if(f.id==='f-client'){
     if(digits(fd.get('phone')).length<10){toast('Проверьте номер','Нужно 10 цифр после +7');return}
-    const gid=fd.get('group');if(gid&&group(gid).clientIds.length>=GROUP_MAX){toast('Группа заполнена',`В группе уже ${GROUP_MAX} человек`);return}
+    const gid=fd.get('group');
     const c={id:uid('c'),name:fd.get('name').trim(),phone:fmtPhone(fd.get('phone')),kind:fd.get('kind'),age:fd.get('age')||'',parent:fd.get('parent')||'',tariff:fd.get('tariff'),note:fd.get('note')||''};
     S.clients.push(c);if(gid){const g=group(gid);g.clientIds.push(c.id);syncGroupSessions(g)}
     persist();UI.view='clients';closeSheet();toast('Клиент добавлен',esc(c.name));return}
   if(f.id==='f-group'){
     const m=fd.getAll('m'),name=fd.get('name').trim(),type=fd.get('type');
-    if(m.length<GROUP_MIN||m.length>GROUP_MAX){toast('Проверьте состав',`В группе должно быть от ${GROUP_MIN} до ${GROUP_MAX} человек, сейчас ${m.length}`);return}
+    if(m.length<GROUP_MIN){toast('Добавьте участника','В группе должен быть хотя бы один человек');return}
     let g=group(f.dataset.id);
     if(g){g.name=name;g.type=type;g.clientIds=m;syncGroupSessions(g)}else{g={id:uid('g'),name,type,clientIds:m};S.groups.push(g)}
-    persist();UI.view='clients';closeSheet();toast(f.dataset.id?'Группа сохранена':'Группа создана',`${esc(name)} · ${m.length} из ${GROUP_MAX}`);return}
+    persist();UI.view='clients';closeSheet();toast(f.dataset.id?'Группа сохранена':'Группа создана',`${esc(name)} · ${people(m.length)}`);return}
   if(f.id==='f-pay'){
     const phone=fd.get('phone');
     if(digits(phone).length<10){toast('Проверьте номер','Нужно 10 цифр после +7');return}
