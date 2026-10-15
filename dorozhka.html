@@ -89,8 +89,10 @@ a.btn{color:var(--ink);text-decoration:none}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .fchip{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:6px 12px;font-size:.86rem;color:var(--muted)}
 .fchip[aria-pressed="true"]{background:var(--ink);border-color:var(--ink);color:var(--bg)}
-.wdays label{position:relative;cursor:pointer;min-width:44px;text-align:center}.wdays input{position:absolute;opacity:0;pointer-events:none}
+.wdays label{position:relative;cursor:pointer;min-width:44px;text-align:center}.wdays input[type=checkbox]{position:absolute;opacity:0;pointer-events:none}
 .wdays label:has(input:checked){background:var(--ink);border-color:var(--ink);color:var(--bg)}.wdays label:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
+.pl-days{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px 12px}.pl-day{display:flex;align-items:center;gap:8px}.pl-day .inp{flex:1;min-width:0}.pl-day:not(:has(input:checked)) input[type=time]{visibility:hidden}
+.hrow{display:flex;align-items:center;gap:8px;flex-wrap:nowrap}.hrow .inp{width:auto;flex:1;min-width:0}.hrow:not(:has(input:checked)) input[type=time]{opacity:.4}
 .chip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 9px;font-size:.76rem;font-weight:600;white-space:nowrap;
   background:color-mix(in srgb,var(--tc,var(--muted)) 15%,transparent);color:color-mix(in srgb,var(--tc,var(--muted)) 78%,var(--ink))}
 .t-baby{--tc:var(--t-baby)} .t-individual{--tc:var(--t-individual)} .t-group{--tc:var(--t-group)} .t-split{--tc:var(--t-split)} .t-minigroup{--tc:var(--t-minigroup)} .k-trial{--tc:var(--accent)} .k-makeup{--tc:var(--warn)}
@@ -566,24 +568,72 @@ function remLabel(cs){return cs.remaining<0?`долг ${-cs.remaining} ${plural(
 function planDates(from,days,n){const out=[],off=S.vacations||[];if(!days.length||!(n>0))return out;
   for(let d=pdate(from),guard=0;out.length<n&&guard<730;d=addDays(d,1),guard++){const di=iso(d);if(days.includes(wd(d))&&!off.some(v=>v.from<=di&&di<=v.to))out.push(di)}return out}
 const daysLabel=days=>days.slice().sort().map(i=>DAY[i]).join(', ');
-function planInfo(from,days,n){const ds=planDates(from,days,n);if(!ds.length)return 'Выберите дни недели и число тренировок.';
-  return `По ${days.length} в неделю, ${daysLabel(days)}. Первая ${fdateS(ds[0])}, последняя ${fdateS(ds[ds.length-1])}. Всего ${ds.length} ${plural(ds.length,'тренировка','тренировки','тренировок')}, дальше не продлевается.`}
+const DAY_PL=['понедельникам','вторникам','средам','четвергам','пятницам','субботам','воскресеньям'];
+const toMin=t=>{const [h,m]=String(t||'0:0').split(':').map(Number);return h*60+(m||0)};
+const fromMin=m=>`${pad(Math.floor(m/60))}:${pad(m%60)}`;
+// Working hours by weekday (0 = Monday); by default Mon–Sat 07:00–21:00, Sunday off.
+const DEF_HOURS=[...Array(7)].map((_,i)=>({on:i<6,from:'07:00',to:'21:00'}));
+const workHours=()=>DEF_HOURS.map((d,i)=>({...d,...(S.settings.hours?.[i]||{})}));
+const gapMin=()=>Math.max(0,+(S.settings.breakMin??10)||0);
+const stepMin=()=>Math.max(5,+S.settings.stepMin||10);
+const clientType=c=>{const tf=tariffOf(c);return c.kind==='baby'||tf.type==='baby'?'baby':tf.type==='split'?'split':'individual'};
+// Each chosen weekday has its own time: slots = {weekday: 'HH:MM'}.
+const planSlots=(from,slots,n)=>planDates(from,Object.keys(slots).map(Number),n).map(date=>({date,time:slots[wd(pdate(date))]}));
+const slotsLabel=slots=>{const ks=Object.keys(slots).map(Number).sort(),ts=new Set(ks.map(k=>slots[k]));
+  return ts.size===1?`${daysLabel(ks)} в ${[...ts][0]}`:ks.map(k=>`${DAY[k]} ${slots[k]}`).join(', ')};
+function planInfo(p){const ds=planSlots(p.from,p.slots,p.n),k=Object.keys(p.slots).length;if(!ds.length)return 'Отметьте дни недели и укажите число тренировок.';
+  return `По ${k} в неделю: ${slotsLabel(p.slots)}. ${(w=>`${w} ${plural(w,'неделя','недели','недель')}`)(Math.ceil(ds.length/k))}, первая ${fdateS(ds[0].date)}, последняя ${fdateS(ds[ds.length-1].date)}. Всего ${ds.length} ${plural(ds.length,'тренировка','тренировки','тренировок')}, дальше не продлевается.${k!==p.perWeek?` Отмечено дней: ${k}, а «раз в неделю» — ${p.perWeek}.`:''}`}
 const wdChips=(name,sel)=>`<div class="chips wdays" role="group" aria-label="Дни недели">${DAY.map((d,i)=>`<label class="fchip"><input type="checkbox" name="${name}" value="${i}" ${sel.includes(i)?'checked':''}>${d}</label>`).join('')}</div>`;
 // Future sessions of this client that a new plan replaces: not in a group, not marked yet.
 const planned=cid=>{const now=new Date();return S.sessions.filter(s=>!s.groupId&&!s.cancelled&&s.clientIds.includes(cid)&&startDT(s)>now&&!Object.keys(s.att||{}).length)};
+// Sessions that stop being busy time once the plan replaces them (only the client's own, not a shared split).
+// The replace box is checked by default, so before it is on screen the client's own sessions are not busy either.
+const planIgnore=cid=>new Set((document.getElementById('pl-replace')?.checked??true)?planned(cid).filter(s=>s.clientIds.length===1).map(s=>s.id):[]);
+// Busy minutes on a date: every session that is not cancelled, widened by the break before and after.
+const busyOn=(date,ignore)=>{const g=gapMin();return S.sessions.filter(s=>s.date===date&&!s.cancelled&&!ignore.has(s.id)).map(s=>{const a=toMin(s.start);return [a-g,a+s.dur+g,s]})};
+const clash=(date,start,dur,ignore)=>{const a=toMin(start),b=a+dur;return busyOn(date,ignore).find(([x,y])=>a<y&&b>x)?.[2]||null};
+// Start times inside working hours that are free on every one of the dates (all on weekday d).
+function freeTimes(dates,dur,ignore,d){const h=workHours()[d];if(!h.on||!dates.length)return [];const st=stepMin(),now=new Date(),busy=dates.map(x=>busyOn(x,ignore));
+  const min=dates.includes(iso(now))?now.getHours()*60+now.getMinutes():0,out=[];
+  for(let a=Math.ceil(toMin(h.from)/st)*st;a+dur<=toMin(h.to);a+=st)if(a>min&&busy.every(bs=>!bs.some(([x,y])=>a<y&&a+dur>x)))out.push(a);return out}
+function combos(arr,k){const out=[],cur=[];const rec=i=>{if(cur.length===k){out.push(cur.slice());return}for(let j=i;j<arr.length;j++){cur.push(arr[j]);rec(j+1);cur.pop()}};rec(0);return out}
+/* Ready-made sets for the client: perWeek working days, free on every date of the package.
+   Same time on all days first, then days spread over the week, then closest to the time already entered. */
+function suggestSets(c,p,ignore){const dur=DUR[clientType(c)],days=workHours().map((h,i)=>h.on?i:-1).filter(i=>i>=0),k=Math.min(p.perWeek,days.length);
+  if(!k||!p.n||!p.from)return [];const pref=toMin(Object.values(p.slots)[0]||'18:00'),near=f=>f.reduce((a,x)=>Math.abs(x-pref)<Math.abs(a-pref)?x:a),sets=[];
+  for(const cb of combos(days,k)){const dates=planDates(p.from,cb,p.n);if(dates.length<p.n)continue;
+    const free=cb.map(d=>freeTimes(dates.filter(x=>wd(pdate(x))===d),dur,ignore,d));if(free.some(f=>!f.length))continue;
+    const common=free.reduce((a,f)=>a.filter(x=>f.includes(x))),spread=k>1?Math.min(...cb.map((d,i)=>(cb[(i+1)%k]-d+7)%7)):7;
+    const times=common.length?cb.map(()=>near(common)):free.map(near);
+    sets.push({slots:Object.fromEntries(cb.map((d,i)=>[d,fromMin(times[i])])),same:common.length?1:0,spread:spread>1?1:0,dist:times.reduce((a,x)=>a+Math.abs(x-pref),0)/k})}
+  return sets.sort((a,b)=>b.same-a.same||b.spread-a.spread||a.dist-b.dist).slice(0,5)}
+function planConflicts(c,p,ignore){const dur=DUR[clientType(c)];return planSlots(p.from,p.slots,p.n).map(x=>({...x,s:clash(x.date,x.time,dur,ignore)})).filter(x=>x.s)}
+function planWarn(c,p){const cf=planConflicts(c,p,planIgnore(c.id));if(!cf.length)return '';
+  return `Занято: ${cf.slice(0,3).map(x=>`${DAY[wd(pdate(x.date))]} ${fdateS(x.date)} ${x.time} — ${esc(shortTitle(x.s))}`).join('; ')}${cf.length>3?` и ещё ${cf.length-3}`:''}. Поставить всё равно можно.`}
+const setsText=(sets,p)=>`Здравствуйте! Могу предложить время для тренировок: ${sets.map(s=>{const ks=Object.keys(s.slots).map(Number).sort(),one=new Set(ks.map(k=>s.slots[k])).size===1;
+  return one?`по ${ks.map(k=>DAY_PL[k]).join(' и ')} в ${s.slots[ks[0]]}`:ks.map(k=>`по ${DAY_PL[k]} в ${s.slots[k]}`).join(' и ')}).join('; или ')}. Всего ${p.n} ${plural(p.n,'тренировка','тренировки','тренировок')}, начало с ${fdateS(p.from)}. Какой вариант вам удобнее?`;
 function planBlock(c){const t=tariffOf(c),cs=clientStats(c.id);
   if(GROUPISH(t.type))return `<div class="blockt"><h3>Тренировки по абонементу</h3><p class="small muted">Клиент ходит в группу: дни и время задаёт группа.</p></div>`;
-  const pl=c.plan||{},n=pl.n||(cs.remaining>0?cs.remaining:t.p8?8:t.p10?10:1),days=pl.days||[wd(new Date())],time=pl.time||'18:00',from=iso(new Date()),old=planned(c.id).length;
-  return `<div class="blockt" id="plan"><h3>Тренировки по абонементу</h3>
-    <p class="small muted">Укажите, сколько тренировок и в какие дни. Они встанут в расписание поровну на каждую неделю и закончатся на последней — без продления.</p>
-    <div class="grid3"><label class="f" for="pl-n">Тренировок<input class="inp" type="number" id="pl-n" min="1" max="60" value="${n}"></label>
-      <label class="f" for="pl-time">Время<input class="inp" type="time" id="pl-time" value="${time}" step="300"></label>
-      <label class="f" for="pl-from">С какого дня<input class="inp" type="date" id="pl-from" value="${from}"></label></div>
-    ${wdChips('pl-wd',days)}
-    <p class="small muted" id="pl-info">${planInfo(from,days,n)}</p>
+  const pl=c.plan||{},slots=pl.slots||Object.fromEntries((pl.days||[wd(new Date())]).map(d=>[d,pl.time||'18:00'])),base=Object.values(slots)[0]||'18:00';
+  const p={n:pl.n||(cs.remaining>0?cs.remaining:t.p8?8:t.p10?10:1),perWeek:pl.perWeek||Object.keys(slots).length||2,from:iso(new Date()),slots},old=planned(c.id).length;
+  return `<div class="blockt" id="pl-box" data-cid="${c.id}"><h3>Тренировки по абонементу</h3>
+    <p class="small muted">Сколько тренировок и в какие дни, у каждого дня своё время. Они встанут в расписание поровну на каждую неделю и закончатся на последней — без продления.</p>
+    <div class="grid3"><label class="f" for="pl-n">Тренировок<input class="inp" type="number" id="pl-n" min="1" max="60" value="${p.n}"></label>
+      <label class="f" for="pl-week">Раз в неделю<input class="inp" type="number" id="pl-week" min="1" max="6" value="${p.perWeek}"></label>
+      <label class="f" for="pl-from">С какого дня<input class="inp" type="date" id="pl-from" value="${p.from}"></label></div>
+    <div class="pl-days wdays" role="group" aria-label="Дни недели и время">${DAY.map((d,i)=>`<div class="pl-day"><label class="fchip"><input type="checkbox" name="pl-wd" value="${i}" ${slots[i]?'checked':''}>${d}</label><input class="inp" type="time" step="600" id="pl-t${i}" value="${slots[i]||base}" aria-label="Время, ${DAYF[i]}"></div>`).join('')}</div>
+    <p class="small muted" id="pl-info">${planInfo(p)}</p>
+    <p class="small" id="pl-warn" style="color:var(--warn)">${planWarn(c,p)}</p>
     ${old?`<label class="small"><input type="checkbox" id="pl-replace" checked> Убрать уже запланированные (${old})</label>`:''}
-    <div class="row"><button class="btn" data-act="plan-apply" data-cid="${c.id}">Поставить в расписание</button></div></div>`}
-function readPlan(){const g=id=>document.getElementById(id);return {n:Math.min(60,Math.max(0,Math.floor(+g('pl-n').value||0))),time:g('pl-time').value,from:g('pl-from').value,days:[...document.querySelectorAll('[name="pl-wd"]:checked')].map(x=>+x.value)}}
+    <div class="row"><button class="btn" data-act="plan-suggest" data-cid="${c.id}">Подобрать свободное время</button><button class="btn primary" data-act="plan-apply" data-cid="${c.id}">Поставить в расписание</button></div>
+    <div id="pl-sets"></div></div>`}
+function setsHTML(c,sets,p){if(!sets.length)return `<p class="small muted">Свободного времени на все ${p.n} ${plural(p.n,'тренировку','тренировки','тренировок')} по ${p.perWeek} в неделю не нашлось. Уменьшите «раз в неделю», сдвиньте начало или расширьте рабочие часы в «Ещё».</p>`;
+  return `<span class="f">Свободно на все даты абонемента — нажмите, чтобы подставить</span><div class="chips">${sets.map((s,i)=>`<button type="button" class="fchip" data-act="plan-pick" data-i="${i}">${slotsLabel(s.slots)}</button>`).join('')}</div>
+    <div class="row"><button class="btn sm ghost" data-act="plan-copy" data-cid="${c.id}">${ic('copy')}Скопировать для клиента</button></div>`}
+function readPlan(){const g=id=>document.getElementById(id),slots={};document.querySelectorAll('[name="pl-wd"]:checked').forEach(x=>{slots[x.value]=g('pl-t'+x.value).value});
+  return {n:Math.min(60,Math.max(0,Math.floor(+g('pl-n').value||0))),perWeek:Math.min(6,Math.max(1,Math.floor(+g('pl-week').value||1))),from:g('pl-from').value,slots}}
+function planRefresh(){const el=document.getElementById('pl-box');if(!el)return;const c=client(el.dataset.cid),p=readPlan();
+  document.getElementById('pl-info').textContent=planInfo(p);document.getElementById('pl-warn').innerHTML=planWarn(c,p)}
 function prevNote(s){
   const t=startDT(s);
   const same=x=>s.groupId?x.groupId===s.groupId:(!x.groupId&&x.clientIds[0]===s.clientIds[0]);
@@ -823,6 +873,9 @@ function vPlan(){
         <label class="toggle" for="set-digest"><span><b>Утренняя сводка в 7:00</b><br><span class="small muted">Кто сегодня придёт и у кого кончается абонемент</span></span><input class="sw" type="checkbox" id="set-digest" data-set="morningDigest" ${st.morningDigest?'checked':''}></label>
         <label class="toggle" for="set-tgatt"><span><b>Кнопки отметки в Telegram</b><br><span class="small muted">Через 10 минут после занятия бот пришлёт «был / не предупредил / предупредил»</span></span><input class="sw" type="checkbox" id="set-tgatt" data-set="tgAttendance" ${st.tgAttendance!==false?'checked':''}></label>
         </div>
+        <div class="blockt"><h3>Рабочие часы</h3><p class="small muted">По ним карточка клиента подбирает свободное время. Между занятиями остаётся перерыв.</p>
+          <div class="wdays" style="display:flex;flex-direction:column;gap:6px">${workHours().map((h,i)=>`<div class="hrow"><label class="fchip"><input type="checkbox" data-hours="${i}" data-hf="on" ${h.on?'checked':''}>${DAY[i]}</label><input class="inp" type="time" step="600" data-hours="${i}" data-hf="from" value="${h.from}" aria-label="${DAYF[i]}, с"><span class="muted">–</span><input class="inp" type="time" step="600" data-hours="${i}" data-hf="to" value="${h.to}" aria-label="${DAYF[i]}, до"></div>`).join('')}</div>
+          <div class="grid2"><label class="f" for="set-break">Перерыв, мин<input class="inp" type="number" min="0" max="60" step="5" id="set-break" data-set="breakMin" value="${gapMin()}"></label><label class="f" for="set-step">Шаг подбора, мин<input class="inp" type="number" min="5" max="60" step="5" id="set-step" data-set="stepMin" value="${stepMin()}"></label></div></div>
         <div class="row"><button class="btn" data-act="test-push">${ic('bell')}Проверить напоминание</button>${CLOUD?'<button class="btn ghost" data-act="logout">Выйти</button>':''}${SERVER.on?'':'<button class="btn ghost danger" data-act="reset">Сбросить демо-данные</button>'}</div>
         ${tgBlock()}
       </div>
@@ -1195,17 +1248,22 @@ document.addEventListener('click',e=>{
   if(a==='copy-pay'){const c=client(t.dataset.cid),cs=clientStats(c.id),tf=tariffOf(c),who=c.parent?c.parent.split(',')[0]:c.name.split(' ')[0];
     const offer=[tf.p8?`8 занятий — ${money(tf.p8)}`:'',tf.p10?`10 занятий — ${money(tf.p10)}`:''].filter(Boolean).join(', ');
     return copyText(`Здравствуйте, ${who}! ${cs.remaining>0?`По абонементу осталось ${cs.remaining} ${plural(cs.remaining,'занятие','занятия','занятий')}`:'Оплаченные занятия закончились'}. Продлеваем? ${tf.label}: ${offer}${tf.note?` (${tf.note})`:''}. Оплата через Kaspi.`)}
-  if(a==='plan-apply'){const c=client(t.dataset.cid),p=readPlan(),tf=tariffOf(c);
-    if(!p.days.length){toast('Выберите дни','Отметьте хотя бы один день недели');return}
+  if(a==='plan-apply'){const c=client(t.dataset.cid),p=readPlan(),days=Object.keys(p.slots);
+    if(!days.length){toast('Выберите дни','Отметьте хотя бы один день недели');return}
     if(!p.n){toast('Сколько тренировок?','Укажите число от 1 до 60');return}
-    if(!p.time||!p.from){toast('Проверьте время и дату','Укажите, с какого дня и во сколько');return}
-    const dates=planDates(p.from,p.days,p.n),type=c.kind==='baby'?'baby':tf.type==='split'?'split':tf.type==='baby'?'baby':'individual';
+    if(!p.from||Object.values(p.slots).some(x=>!x)){toast('Проверьте время и дату','Укажите, с какого дня и время для каждого дня');return}
+    const list=planSlots(p.from,p.slots,p.n),type=clientType(c);
     let removed=0;if(document.getElementById('pl-replace')?.checked)planned(c.id).forEach(s=>{removed++;s.clientIds=s.clientIds.filter(x=>x!==c.id)});
     S.sessions=S.sessions.filter(s=>s.clientIds.length||s.groupId);
-    for(const date of dates)S.sessions.push({id:uid('s'),date,start:p.time,dur:DUR[type],type,kind:null,groupId:null,clientIds:[c.id],place:PLACE[type],att:{},log:'',next:'',cancelled:false});
-    c.plan={n:p.n,days:p.days,time:p.time};S.sessions.sort(byStart);persist();
-    toast('Тренировки в расписании',`${esc(c.name.split(' ')[0])}: ${dates.length} ${plural(dates.length,'тренировка','тренировки','тренировок')}, ${daysLabel(p.days)} в ${p.time}, последняя ${fdateS(dates[dates.length-1])}${removed?`. Убрано старых: ${removed}`:''}`);
+    for(const x of list)S.sessions.push({id:uid('s'),date:x.date,start:x.time,dur:DUR[type],type,kind:null,groupId:null,clientIds:[c.id],place:PLACE[type],att:{},log:'',next:'',cancelled:false});
+    c.plan={n:p.n,perWeek:p.perWeek,slots:p.slots};S.sessions.sort(byStart);persist();
+    toast('Тренировки в расписании',`${esc(c.name.split(' ')[0])}: ${list.length} ${plural(list.length,'тренировка','тренировки','тренировок')}, ${slotsLabel(p.slots)}, последняя ${fdateS(list[list.length-1].date)}${removed?`. Убрано старых: ${removed}`:''}`);
     return clientSheet(c.id)}
+  if(a==='plan-suggest'){const c=client(t.dataset.cid),p=readPlan();UI.planSets=suggestSets(c,p,planIgnore(c.id));UI.planP=p;document.getElementById('pl-sets').innerHTML=setsHTML(c,UI.planSets,p);return}
+  if(a==='plan-pick'){const set=UI.planSets?.[+t.dataset.i];if(!set)return;
+    document.querySelectorAll('[name="pl-wd"]').forEach(x=>{x.checked=x.value in set.slots;if(x.checked)document.getElementById('pl-t'+x.value).value=set.slots[x.value]});
+    t.parentElement.querySelectorAll('.fchip').forEach(b=>b.setAttribute('aria-pressed',b===t));planRefresh();return}
+  if(a==='plan-copy'){if(UI.planSets?.length)copyText(setsText(UI.planSets,UI.planP),'Отправьте клиенту варианты в WhatsApp или Telegram');return}
   if(a==='vacation')return vacationSheet();
   if(a==='vac-apply'){const from=document.getElementById('vac-from').value,to=document.getElementById('vac-to').value;
     if(!from||!to||from>to){toast('Проверьте даты','«С» должно быть не позже «по»');return}
@@ -1241,7 +1299,9 @@ document.addEventListener('change',e=>{
   if(t.id==='vac-from'||t.id==='vac-to'){document.getElementById('vac-prev').innerHTML=vacPrevHTML(document.getElementById('vac-from').value,document.getElementById('vac-to').value);return}
   if(t.id==='ns-kind'&&t.value)document.getElementById('ns-rep').value='1';
   if(t.id==='ns-date'&&t.value){const i=wd(pdate(t.value));document.querySelectorAll('#f-session [name="wd"]').forEach(x=>{if(+x.value===i)x.checked=true})}
-  if(t.closest?.('#plan'))document.getElementById('pl-info').textContent=(p=>planInfo(p.from,p.days,p.n))(readPlan());
+  if(t.name==='pl-wd'&&t.checked){const other=document.querySelector(`[name="pl-wd"]:checked:not([value="${t.value}"])`);if(other)document.getElementById('pl-t'+t.value).value=document.getElementById('pl-t'+other.value).value}
+  if(t.closest?.('#pl-box')){planRefresh();if(t.id!=='pl-replace'&&!t.id.startsWith('pl-t')&&t.name!=='pl-wd')document.getElementById('pl-sets').innerHTML=''}
+  if(t.dataset.hours){const h=workHours();h[+t.dataset.hours][t.dataset.hf]=t.type==='checkbox'?t.checked:t.value;S.settings.hours=h;persist();return}
   if(t.id==='nc-kind')document.getElementById('nc-tariff').value=defTariff(t.value);
   if(t.id==='np-tariff')setPayTariff(tariff(t.value),curCid(),true);
   if(t.id==='np-with')recalcAmount();
