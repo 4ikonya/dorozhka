@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 740" width="560" height="740" role="img" aria-label="Сообщения бота «Дорожка» в Telegram: сводка дня, напоминание о занятии и кнопки отметки посещения">
+  <!-- Texts are the real output of shared/schedule.mjs (dayText, reminderText, attendanceView) for a sample day. -->
+  <defs><clipPath id="frame"><rect width="560" height="740" rx="20"/></clipPath></defs>
+  <g clip-path="url(#frame)" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+    <rect width="560" height="740" fill="#D6E3EA"/>
+    <!-- header -->
+    <rect width="560" height="64" fill="#FFFFFF"/>
+    <rect y="64" width="560" height="1" fill="#C9D6DD"/>
+    <circle cx="40" cy="32" r="20" fill="#0A6383"/>
+    <text x="40" y="39" font-size="18" font-weight="700" fill="#FFFFFF" text-anchor="middle">Д</text>
+    <text x="72" y="28" font-size="16" font-weight="700" fill="#0D2230">Дорожка</text>
+    <text x="72" y="48" font-size="13" fill="#6B8794">бот · пишет только тренеру</text>
+
+    <rect x="226" y="80" width="108" height="24" rx="12" fill="#0D2230" fill-opacity=".28"/>
+    <text x="280" y="97" font-size="13" fill="#FFFFFF" text-anchor="middle">15 октября</text>
+
+    <!-- 07:00 digest -->
+    <rect x="16" y="120" width="440" height="186" rx="14" fill="#FFFFFF"/>
+    <g font-size="16" fill="#0D2230">
+      <text x="30" y="148" font-weight="700">Сводка дня</text>
+      <text x="30" y="171">Четверг, 15 октября</text>
+      <text x="30" y="194">18:00 — Дельфины (Дорожка 2)</text>
+      <text x="30" y="217">19:00 — Олжас Бекенов (Дорожка 6)</text>
+      <text x="30" y="252">Нужна оплата: Тимур Ахметов (осталось 0),</text>
+      <text x="30" y="275">Дана Ким (осталось 0)</text>
+    </g>
+    <text x="444" y="298" font-size="12" fill="#8AA0AB" text-anchor="end">07:00</text>
+
+    <!-- reminder before the session -->
+    <rect x="16" y="318" width="440" height="128" rx="14" fill="#FFFFFF"/>
+    <g font-size="16" fill="#0D2230">
+      <text x="30" y="346"><tspan font-weight="700">Через 2 ч:</tspan> 19:00 — Олжас Бекенов</text>
+      <text x="30" y="369">Индивидуальное, Дорожка 6</text>
+      <text x="30" y="392">С прошлого раза: Попробовать 100 м</text>
+      <text x="30" y="415">без остановки.</text>
+    </g>
+    <text x="444" y="438" font-size="12" fill="#8AA0AB" text-anchor="end">17:00</text>
+
+    <!-- attendance buttons 10 minutes after the session -->
+    <rect x="16" y="458" width="440" height="128" rx="14" fill="#FFFFFF"/>
+    <g font-size="16" fill="#0D2230">
+      <text x="30" y="486"><tspan font-weight="700">Отметьте посещение:</tspan> 18:00 — Дельфины</text>
+      <text x="30" y="509">Амина Сейткали: был</text>
+      <text x="30" y="532">Тимур Ахметов: —</text>
+      <text x="30" y="555">Дана Ким: —</text>
+    </g>
+    <text x="444" y="578" font-size="12" fill="#8AA0AB" text-anchor="end">18:55</text>
+
+    <g fill="#2F5C74" fill-opacity=".5">
+      <rect x="16" y="592" width="160" height="40" rx="10"/><rect x="182" y="592" width="140" height="40" rx="10"/><rect x="328" y="592" width="128" height="40" rx="10"/>
+      <rect x="16" y="638" width="160" height="40" rx="10"/><rect x="182" y="638" width="140" height="40" rx="10"/><rect x="328" y="638" width="128" height="40" rx="10"/>
+      <rect x="16" y="684" width="160" height="40" rx="10"/><rect x="182" y="684" width="140" height="40" rx="10"/><rect x="328" y="684" width="128" height="40" rx="10"/>
+    </g>
+    <g font-size="15" font-weight="600" fill="#FFFFFF" text-anchor="middle">
+      <text x="96" y="617">• Амина: был</text><text x="252" y="617">не предупр.</text><text x="392" y="617">предупр.</text>
+      <text x="96" y="663">Тимур: был</text><text x="252" y="663">не предупр.</text><text x="392" y="663">предупр.</text>
+      <text x="96" y="709">Дана: был</text><text x="252" y="709">не предупр.</text><text x="392" y="709">предупр.</text>
+    </g>
+  </g>
+</svg>
