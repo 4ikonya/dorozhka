@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// Builds cloud/web (the site Vercel serves) from dorozhka.html, with the Supabase project baked in,
-// and copies the shared reminder logic into the Supabase function.
+// Builds cloud/web (the site Vercel serves) and copies the shared reminder logic into the Supabase function:
+//   /       the landing page (landing.html; until it exists, a redirect to /app)
+//   /app    the journal, with the Supabase project baked in
+//   /demo   the same journal on demo data in the browser, no account
 //   node cloud/build.mjs        (reads cloud/config.json: { "supabaseUrl": "...", "anonKey": "..." })
 import fs from 'node:fs';
 import path from 'node:path';
@@ -36,13 +38,26 @@ const head = [
   '<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js" integrity="sha384-0w2KAL2YHP6wKOkUDzkCDGgVvfmHnj02DHeQ6XcHOgTfFsGyonKOpShMH1x6nk9o" crossorigin="anonymous"></script>',
   `<script>window.DOROZHKA_CLOUD=${JSON.stringify(cloud)}</script>`,
 ].join('');
-fs.writeFileSync(path.join(web, 'index.html'), `<!doctype html><html lang="ru"><head>${head}</head><body>${body}</body></html>`);
+const page = (h) => `<!doctype html><html lang="ru"><head>${h}</head><body>${body}</body></html>`;
+for (const dir of ['app', 'demo']) fs.mkdirSync(path.join(web, dir), { recursive: true });
+fs.writeFileSync(path.join(web, 'app', 'index.html'), page(head));
+// The demo is the plain app: without DOROZHKA_CLOUD it runs on demo data kept in the browser.
+const demoHead = head.replace(/<script src="https:\/\/cdn\.jsdelivr\.net\/npm\/@supabase[^]*$/, '');
+fs.writeFileSync(path.join(web, 'demo', 'index.html'), page(demoHead + '<meta name="robots" content="noindex">'));
+// Landing: screenshots from docs/ are served from /img/.
+const landing = path.join(root, 'landing.html');
+fs.mkdirSync(path.join(web, 'img'), { recursive: true });
+for (const f of fs.readdirSync(path.join(root, 'docs', 'screenshots'))) fs.copyFileSync(path.join(root, 'docs', 'screenshots', f), path.join(web, 'img', f));
+fs.writeFileSync(path.join(web, 'index.html'), fs.existsSync(landing)
+  ? fs.readFileSync(landing, 'utf8').replaceAll('/docs/screenshots/', '/img/')
+  : '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=/app"><title>Дорожка</title><a href="/app">Дорожка</a>');
 
 fs.writeFileSync(path.join(web, 'manifest.webmanifest'), JSON.stringify({
   name: 'Дорожка — журнал тренера',
   short_name: 'Дорожка',
   lang: 'ru',
-  start_url: '/',
+  start_url: '/app',
+  scope: '/',
   display: 'standalone',
   background_color: '#EDF3F5',
   theme_color: '#0A6383',
@@ -60,6 +75,8 @@ fs.writeFileSync(path.join(web, 'icon.svg'), `<svg xmlns="http://www.w3.org/2000
 </svg>`);
 
 fs.writeFileSync(path.join(web, 'vercel.json'), JSON.stringify({
+  cleanUrls: true,
+  rewrites: [{ source: '/app', destination: '/app/index.html' }, { source: '/demo', destination: '/demo/index.html' }],
   headers: [{ source: '/(.*)', headers: [
     { key: 'X-Frame-Options', value: 'DENY' },
     { key: 'Referrer-Policy', value: 'same-origin' },

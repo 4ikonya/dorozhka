@@ -380,7 +380,7 @@ const MON=['января','февраля','марта','апреля','мая',
 const MON_P=["январе","феврале","марте","апреле","мае","июне","июле","августе","сентябре","октябре","ноябре","декабре"];
 const BABY_CHIPS=['Погружение с головой','Скольжение на груди','Лежание на спине','Игрушка-приманка','Прыжок с бортика к маме','Задержка дыхания по команде'];
 const SWIM_CHIPS=['Кроль на ногах с доской','Скольжение «стрелочка»','Дыхание в воду ×10','Спина с колобашкой','Старт с тумбы','Поворот сальто','4×25 м кроль'];
-const VIEWS=[['today','Сегодня','Сегодня'],['schedule','Расписание','Неделя'],['clients','Клиенты','Клиенты'],['payments','Оплаты и чеки','Чеки'],['reports','Отчёты','Отчёты'],['plan','Стек и идеи','Ещё']];
+const VIEWS=[['today','Сегодня','Сегодня'],['schedule','Расписание','Неделя'],['clients','Клиенты','Клиенты'],['payments','Оплаты и чеки','Чеки'],['reports','Отчёты','Отчёты'],['plan','Настройки','Ещё']];
 const ICON={
  today:'<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>',
  schedule:'<rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
@@ -514,6 +514,8 @@ let S;
 function load(){try{const raw=localStorage.getItem(KEY);if(raw){S=JSON.parse(raw);if(!S.prices)S.prices=PRICES.map(t=>({...t}));return}}catch(e){}S=seed()}
 function persist(){if(SERVER.on){SERVER.dirty=true;clearTimeout(SERVER.timer);SERVER.timer=setTimeout(pushState,400);return}
   try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){toast('Не удалось сохранить','В браузере закончилось место для демо-данных. Удалите пару фото чеков.')}}
+// Real data (cloud or the laptop server), not the demo.
+const REAL=()=>!!(CLOUD||SERVER.on);
 const SERVER={on:false,version:0,timer:null,dirty:false,offline:false};
 const UI={tg:null,view:'today',week:0,selDay:null,cFilter:'all',cQuery:'',pQuery:'',period:'month',rType:'all',pendingImg:null,openSheet:null};
 
@@ -522,7 +524,7 @@ const group=id=>S.groups.find(g=>g.id===id);
 const sTitle=s=>s.groupId?(group(s.groupId)?.name||'Группа'):s.clientIds.map(id=>client(id)?.name||'—').join(', ');
 const tariff=id=>S.prices.find(t=>t.id===id);
 function defTariff(kind){return kind==='baby'?'baby':kind==='adult'?'adult-ind':'kid-ind'}
-const tariffOf=c=>tariff(c?.tariff)||tariff(defTariff(c?.kind));
+const tariffOf=c=>tariff(c?.tariff)||tariff(defTariff(c?.kind))||S.prices[0]||{id:'',label:'Без тарифа',type:'individual',one:null,p8:null,p10:null};
 function priceFor(t,n){if(!t)return 0;if(n===1&&t.one)return t.one;if(n===8&&t.p8)return t.p8;if(n===10&&t.p10)return t.p10;
   const per=t.p8?t.p8/8:t.p10?t.p10/10:t.one||0;return Math.round(n*per/500)*500}
 const pkgs=t=>[t.one?[1,'Разовое']:null,t.p8?[8,'8 занятий']:null,t.p10?[10,'10 занятий']:null].filter(Boolean);
@@ -708,6 +710,7 @@ function tlItem(s){const st=sStatus(s);
   return `<li><button data-act="open-session" data-id="${s.id}"><span class="t">${s.start}</span><span style="min-width:0;display:flex;flex-direction:column"><span class="nm">${esc(bTitle(s))}</span><span class="small muted">${TYPES[s.type].label} · ${esc(s.place)}</span></span><span class="chip st-${st}">${ST[st]}</span></button></li>`}
 function reminders(){
   const now=new Date(),out=[];
+  if(S.prices.length&&S.prices.every(t=>!t.one&&!t.p8&&!t.p10))out.push({lv:'warn',title:'Заполните прайс-лист',text:'Цены подставятся в оплаты. Тарифы можно добавлять свои.',acts:`<button class="btn sm" data-act="nav" data-view="plan">Открыть прайс</button>`});
   S.sessions.filter(s=>sStatus(s)==='unmarked'&&now-startDT(s)<14*864e5).sort(byStart).forEach(s=>out.push({lv:'warn',title:`Отметьте посещение: ${DAY[wd(pdate(s.date))]} ${fdateS(s.date)}, ${s.start}`,text:esc(sTitle(s)),acts:`<button class="btn sm" data-act="open-session" data-id="${s.id}">Отметить</button>`}));
   S.sessions.filter(s=>!s.cancelled&&startDT(s)>now&&startDT(s)-now<3*36e5).forEach(s=>out.push({lv:'ok',title:`${rel(startDT(s)-now)[0].toUpperCase()+rel(startDT(s)-now).slice(1)}: ${s.start}`,text:`${esc(sTitle(s))} · ${esc(s.place)}`}));
   S.clients.forEach(c=>{const cs=clientStats(c.id);if(trialOnly(cs))return;if(cs.remaining<=1&&cs.upcoming.length){
@@ -878,8 +881,16 @@ function vPlan(){
     ['Потом','Перенос занятия перетаскиванием в расписании.'],['Потом','Навыки ребёнка: погружение, скольжение, 25 м кролем. Отчёт-открытка для родителей.'],
     ['Потом','Время на 25/50 м с секундомером и график личных рекордов.']];
   const priceRows=Object.entries(TYPES).map(([k,v])=>{const ts=S.prices.filter(t=>t.type===k);if(!ts.length)return '';
-    return `<tr><td colspan="4" class="grp"><span class="chip t-${k}">${v.label}</span></td></tr>`+ts.map(t=>`<tr><td style="white-space:normal">${esc(t.label)}${t.note?`<br><span class="small muted">${t.note}</span>`:''}</td>${['one','p8','p10'].map(f=>`<td class="n">${t[f]!=null?`<input class="inp mono pinp" type="number" step="500" min="0" id="pr-${t.id}-${f}" value="${t[f]}" data-price="${t.id}" data-pf="${f}" aria-label="${esc(t.label)}, ${f==='one'?'разовое':f==='p8'?'8 занятий':'10 занятий'}">`:'<span class="muted">—</span>'}</td>`).join('')}</tr>`).join('')}).join('');
-  return `<div class="page-head"><div><h1>Стек и идеи</h1><p class="sub">Настройки, прайс-лист, предлагаемый стек и что добавить дальше</p></div></div>
+    return `<tr><td colspan="5" class="grp"><span class="chip t-${k}">${v.label}</span></td></tr>`+ts.map(t=>`<tr><td style="white-space:normal">${esc(t.label)}${t.note?`<br><span class="small muted">${t.note}</span>`:''}</td>${['one','p8','p10'].map(f=>`<td class="n"><input class="inp mono pinp" type="number" step="500" min="0" id="pr-${t.id}-${f}" value="${t[f]??''}" placeholder="—" data-price="${t.id}" data-pf="${f}" aria-label="${esc(t.label)}, ${f==='one'?'разовое':f==='p8'?'8 занятий':'10 занятий'}"></td>`).join('')}<td><button class="btn sm ghost danger" data-act="del-tariff" data-id="${t.id}" aria-label="Удалить тариф ${esc(t.label)}">${ic('x')}</button></td></tr>`).join('')}).join('');
+  const addTariff=`<form id="f-tariff" class="sect" style="border-top:1px solid var(--line)" autocomplete="off"><h3>Новый тариф</h3>
+    <div class="grid2"><label class="f" for="nt-label">Название<input class="inp" id="nt-label" name="label" placeholder="Например, Подросток, персонально" required></label>
+      <label class="f" for="nt-type">Тип занятия<select class="inp" id="nt-type" name="type">${Object.entries(TYPES).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('')}</select></label></div>
+    <div class="grid3"><label class="f" for="nt-one">Разовое, ₸<input class="inp mono" type="number" min="0" step="500" id="nt-one" name="one" placeholder="—"></label>
+      <label class="f" for="nt-p8">8 занятий, ₸<input class="inp mono" type="number" min="0" step="500" id="nt-p8" name="p8" placeholder="—"></label>
+      <label class="f" for="nt-p10">10 занятий, ₸<input class="inp mono" type="number" min="0" step="500" id="nt-p10" name="p10" placeholder="—"></label></div>
+    <label class="f" for="nt-note">Пометка к цене<input class="inp" id="nt-note" name="note" placeholder="Например, за каждого ребёнка"></label>
+    <div class="row" style="justify-content:flex-end"><button class="btn primary" type="submit">Добавить тариф</button></div></form>`;
+  return `<div class="page-head"><div><h1>Настройки</h1><p class="sub">Напоминания, рабочие часы и прайс-лист${REAL()?'':' · ниже — стек и идеи для демо'}</p></div></div>
   <div class="plan-grid">
     <div class="side-col">
       <div class="card sect"><h2>Настройки</h2>
@@ -896,11 +907,11 @@ function vPlan(){
         ${tgBlock()}
       </div>
       <div class="card"><div class="panel-h"><h2>Прайс-лист</h2><span class="small muted">₸ · цены можно править</span></div>
-        <div class="tbl-wrap"><table class="prices"><thead><tr><th>Тариф</th><th class="n">Разовое</th><th class="n">8 зан.</th><th class="n">10 зан.</th></tr></thead><tbody>${priceRows}</tbody></table></div>
-        <p class="small muted" style="padding:10px 16px 14px">Цены подставляются в форму оплаты. Для «двое детей из одной семьи» цена за каждого ребёнка, для сплита — за пару.</p></div>
-      <div class="card sect"><h2>Что уже изменил в UX</h2><div class="prose"><ul>${did.map(x=>`<li>${x}</li>`).join('')}</ul></div></div>
+        <div class="tbl-wrap"><table class="prices"><thead><tr><th>Тариф</th><th class="n">Разовое</th><th class="n">8 зан.</th><th class="n">10 зан.</th><th></th></tr></thead><tbody>${priceRows||'<tr><td colspan="5" class="muted">Тарифов пока нет — добавьте первый ниже.</td></tr>'}</tbody></table></div>
+        <p class="small muted" style="padding:10px 16px 14px">Цены подставляются в форму оплаты. Пустая клетка — такого пакета нет. Для сплита цена за пару.</p>${addTariff}</div>
+      <div class="card sect"${REAL()?' hidden':''}><h2>Что уже изменил в UX</h2><div class="prose"><ul>${did.map(x=>`<li>${x}</li>`).join('')}</ul></div></div>
     </div>
-    <div class="side-col">
+    <div class="side-col"${REAL()?' hidden':''}>
       <div class="card"><div class="panel-h"><h2>Почему такой стек</h2><span class="tag">функция → решение</span></div><div class="tbl-wrap"><table class="stack"><thead><tr><th>Что нужно</th><th>Чем делаем и почему</th></tr></thead><tbody>${FMAP.map(r=>`<tr><td>${r[0]}</td><td><b>${r[1]}</b><br><span class="small muted">${r[2]}</span></td></tr>`).join('')}</tbody></table></div>
         <p class="small muted" style="padding:10px 16px 14px"><b>Что не подошло.</b> Google Таблицы — нет напоминаний и неудобно отмечать с телефона. Отдельное приложение для App Store — дольше и дороже, а PWA ставится на экран телефона так же. Firebase — остатки и отчёты на SQL считать проще и надёжнее.</p></div>
       <div class="card"><div class="panel-h"><h2>Стек</h2><span class="tag">рекомендация</span></div><div class="tbl-wrap"><table class="stack"><tbody>${stack.map(r=>`<tr><td>${r[0]}</td><td><b>${r[1]}</b><br><span class="small muted">${r[2]}</span></td></tr>`).join('')}</tbody></table></div></div>
@@ -1228,6 +1239,7 @@ document.addEventListener('click',e=>{
     BE.tg('disconnect').then(j=>{UI.tg=j;render();toast('Бот отключён','Напоминания в Telegram больше не придут')}).catch(e=>toast('Не получилось',esc(e.message)));return}
   if(a==='tg-login'){tgLoginStart(t);return}
   if(a==='ob-clean'){S.settings.onboarded=true;persist();closeSheet();return}
+  if(a==='ob-prices'||a==='ob-client'){S.settings.onboarded=true;persist();closeSheet();if(a==='ob-prices')return go('plan');go('clients');return newClientSheet()}
   if(a==='logout'){sb?.auth.signOut().finally(()=>location.reload());return}
   if(a==='notif-perm'){try{Promise.resolve(Notification.requestPermission()).then(p=>{toast(p==='granted'?'Уведомления включены':'Браузер не разрешил уведомления',p==='granted'?'Напоминания придут, даже если вкладка свёрнута':'Напоминания будут появляться внутри сервиса со звуком');render()}).catch(()=>{})}catch(err){toast('Браузер не разрешил уведомления','Напоминания будут появляться внутри сервиса со звуком')}return}
   if(a==='close'){if(e.target===t||t.tagName==='BUTTON')closeSheet();return}
@@ -1286,6 +1298,10 @@ document.addEventListener('click',e=>{
     document.querySelectorAll('[name="pl-wd"]').forEach(x=>{x.checked=x.value in set.slots;if(x.checked)document.getElementById('pl-t'+x.value).value=set.slots[x.value]});
     t.parentElement.querySelectorAll('.fchip').forEach(b=>b.setAttribute('aria-pressed',b===t));planRefresh();return}
   if(a==='plan-copy'){if(UI.planSets?.length)copyText(setsText(UI.planSets,UI.planP),'Отправьте клиенту варианты в WhatsApp или Telegram');return}
+  if(a==='del-tariff'){const tf=tariff(t.dataset.id),used=S.clients.filter(c=>c.tariff===tf.id).length;
+    if(used){toast('Тариф используется',`У ${used} ${plural(used,'клиента','клиентов','клиентов')} этот тариф. Сначала смените им тариф в карточке.`);return}
+    if(!t.dataset.armed){t.dataset.armed='1';t.innerHTML='Удалить?';return}
+    S.prices=S.prices.filter(x=>x.id!==tf.id);persist();render();toast('Тариф удалён',esc(tf.label));return}
   if(a==='vacation')return vacationSheet();
   if(a==='vac-apply'){const from=document.getElementById('vac-from').value,to=document.getElementById('vac-to').value;
     if(!from||!to||from>to){toast('Проверьте даты','«С» должно быть не позже «по»');return}
@@ -1306,7 +1322,7 @@ document.addEventListener('input',e=>{
   const t=e.target;
   if(t.dataset.sfield){const s=S.sessions.find(x=>x.id===t.dataset.sid);s[t.dataset.sfield]=t.value;persist()}
   if(t.dataset.cfield){const c=client(t.dataset.cid);c[t.dataset.cfield]=t.value;persist()}
-  if(t.dataset.price){tariff(t.dataset.price)[t.dataset.pf]=+t.value||0;persist();return}
+  if(t.dataset.price){tariff(t.dataset.price)[t.dataset.pf]=t.value===''?null:Math.max(0,+t.value||0);persist();return}
   if(t.id==='c-search'){UI.cQuery=t.value;document.getElementById('clist').innerHTML=clientList()}
   if(t.id==='p-search'){UI.pQuery=t.value;document.getElementById('plist').innerHTML=payList()}
   if(t.id==='np-phone'){document.getElementById('np-match').innerHTML=matchHTML(t.value);applyPayClient()}
@@ -1316,7 +1332,7 @@ document.addEventListener('input',e=>{
 document.addEventListener('change',e=>{
   const t=e.target;
   if(t.dataset.set){S.settings[t.dataset.set]=t.type==='checkbox'?t.checked:t.value;persist();if(t.dataset.set==='chargeNoShow')toast('Правило изменено',t.checked?'Пропуск без предупреждения списывает занятие':'Пропуски больше не списываются');return}
-  if(t.dataset.price){toast('Цена сохранена',`${esc(tariff(t.dataset.price).label)}: ${money(+t.value||0)}`);return}
+  if(t.dataset.price){toast('Цена сохранена',`${esc(tariff(t.dataset.price).label)}: ${t.value===''?'пакета нет':money(+t.value||0)}`);return}
   if(t.id==='ns-type'){document.getElementById('ns-who').innerHTML=whoField(t.value);document.getElementById('ns-place').value=PLACE[t.value];document.getElementById('ns-dur').value=String(DUR[t.value])}
   if(t.id==='vac-from'||t.id==='vac-to'){document.getElementById('vac-prev').innerHTML=vacPrevHTML(document.getElementById('vac-from').value,document.getElementById('vac-to').value);return}
   if(t.id==='ns-kind'&&t.value)document.getElementById('ns-rep').value='1';
@@ -1357,6 +1373,10 @@ document.addEventListener('submit',e=>{
     for(const date of dates)S.sessions.push({id:uid('s'),date,start:fd.get('start'),dur:+fd.get('dur'),type,kind,groupId,clientIds:[...clientIds],place:fd.get('place')||'',att:{},log:'',next:'',cancelled:false});
     S.sessions.sort(byStart);persist();UI.week=Math.round((mondayOf(base)-mondayOf(new Date()))/(7*864e5));UI.selDay=wd(base);UI.view='schedule';closeSheet();
     toast(kind?`${SKIND[kind]} ${kind==='makeup'?'создана':'занятие создано'}`:'Занятие создано',`${DAYF[wd(base)]}, ${fdate(base)}, ${fd.get('start')}${rep>1?` и ещё ${rep-1}, последнее ${fdateS(dates[rep-1])}`:''}`);return}
+  if(f.id==='f-tariff'){const num=k=>fd.get(k)===''?null:Math.max(0,+fd.get(k)||0),type=fd.get('type');
+    const t={id:uid('t'),label:String(fd.get('label')).trim(),type,pair:type==='split',one:num('one'),p8:num('p8'),p10:num('p10'),note:String(fd.get('note')||'').trim()};
+    if(!t.label){toast('Назовите тариф','Например, «Подросток, персонально»');return}
+    S.prices.push(t);persist();render();toast('Тариф добавлен',esc(t.label));return}
   if(f.id==='f-client'){
     if(digits(fd.get('phone')).length<10){toast('Проверьте номер','Нужно 10 цифр после +7');return}
     const gid=fd.get('group');
@@ -1403,7 +1423,8 @@ const BE={
     const r=await fetch(`${CLOUD.url}/functions/v1/telegram/${action}`,{method:'POST',headers:{'content-type':'application/json',apikey:CLOUD.anonKey,authorization:'Bearer '+(session?.access_token||'')},body:JSON.stringify(body||{})});
     const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||('Ошибка '+r.status));return j}
 };
-const emptyState=()=>({v:3,clients:[],groups:[],sessions:[],payments:[],prices:PRICES.map(t=>({...t})),settings:{chargeNoShow:true,remindCoach:'2h',morningDigest:true}});
+// A new journal gets the same tariffs with empty prices: the coach writes in their own.
+const emptyState=()=>({v:3,clients:[],groups:[],sessions:[],payments:[],prices:PRICES.map(t=>({...t,one:null,p8:null,p10:null})),settings:{chargeNoShow:true,remindCoach:'2h',morningDigest:true}});
 async function pushState(){clearTimeout(SERVER.timer);SERVER.timer=null;
   try{const j=await BE.save(SERVER.version,S);SERVER.version=j.version;SERVER.dirty=false;
     if(SERVER.offline){SERVER.offline=false;toast('Связь с сервером есть','Изменения сохранены')}}
@@ -1416,6 +1437,10 @@ function tgBlock(){
   if(!SERVER.on)return '<p class="small muted">Напоминания работают, пока сервис открыт: уведомление со звуком за выбранное время и сводка дня в 7:00. Telegram подключается в локальной версии, которая хранит данные в базе на ноутбуке (папка server).</p>';
   const t=UI.tg;
   if(!t)return '<p class="small muted">Проверяю Telegram…</p>';
+  // Cloud: one shared bot for every coach; the chat was linked when the coach signed up.
+  if(t.shared)return t.chatLinked?`<div class="blockt"><h3>Telegram @${esc(t.botName)} <span class="chip lv-ok">работает</span></h3><p class="small muted">Напоминания, сводка дня и кнопки посещения приходят в ваш чат с ботом круглосуточно, даже когда сервис закрыт. Клиентам бот ничего не пишет. Команды: /today, /next, /receipts.</p>
+    <div class="row"><button class="btn" data-act="tg-test">Отправить тестовое сообщение</button><a class="btn ghost" href="https://t.me/${esc(t.botName)}" target="_blank" rel="noopener">Открыть @${esc(t.botName)}</a></div></div>`
+    :`<div class="blockt"><h3>Telegram @${esc(t.botName)}</h3><p class="small muted">Откройте бота и нажмите «Start», чтобы напоминания приходили вам.</p><div class="row"><a class="btn primary" href="https://t.me/${esc(t.botName)}" target="_blank" rel="noopener">Открыть @${esc(t.botName)}</a><button class="btn ghost" data-act="tg-refresh">Проверить</button></div></div>`;
   if(!t.connected)return `<div class="blockt"><h3>Напоминания в Telegram</h3><p class="small muted">Откройте в Telegram @BotFather, отправьте /newbot и придумайте имя боту. Он пришлёт токен — вставьте его сюда. ${CLOUD?'Токен хранится в закрытой таблице сервиса, приложение его не показывает.':'Токен хранится только в базе на этом ноутбуке.'}</p>
     <div class="row" style="flex-wrap:nowrap"><input class="inp mono" id="tg-token" type="password" autocomplete="off" placeholder="123456789:AA…" aria-label="Токен бота от BotFather"><button class="btn primary" data-act="tg-connect">Подключить</button></div></div>`;
   if(!t.chatLinked)return `<div class="blockt"><h3>Бот @${esc(t.botName)} подключён</h3><p class="small muted">Остался один шаг: откройте бота в Telegram и нажмите «Start». После этого он будет писать только вам.</p>
@@ -1429,8 +1454,8 @@ function renderLogin(msg){
   document.querySelector('.app').classList.add('auth');
   document.querySelector('.side-foot').textContent='Журнал тренера по плаванию. Данные в облаке, вход через Telegram.';
   document.getElementById('main').innerHTML=`<div class="login card"><div class="rope"></div><div class="sect">
-    <h1>Дорожка</h1><p class="muted">Вход для тренера через ваш Telegram-бот. Пароль и почта не нужны.</p>
-    <div class="blockt" id="lg-tg"><button class="btn primary" data-act="tg-login">Войти через Telegram</button></div>
+    <h1>Дорожка</h1><p class="muted">Вход и регистрация через Telegram, без почты и паролей. Новый тренер? Бот предложит создать ваш личный журнал.</p>
+    <div class="blockt" id="lg-tg"><button class="btn primary" data-act="tg-login">Войти или создать журнал</button></div>
     <p class="small muted" id="lg-msg" aria-live="polite">${msg||''}</p>
     <details class="small muted"><summary>Войти по почте</summary>
       <form id="f-login" class="blockt" autocomplete="on"><label class="f" for="lg-email">Почта<input class="inp" id="lg-email" name="email" type="email" required autocomplete="email"></label>
@@ -1457,7 +1482,7 @@ function tgLoginWait(p){
   box.innerHTML=`<p style="margin:0">Код для входа:</p><b class="mono" style="font-size:2em;letter-spacing:.12em">${esc(code)}</b>
     <p class="small" style="margin:0">Откройте Telegram на телефоне, зайдите в чат с <b>@${esc(p.bot)}</b> и отправьте ему этот код.</p>
     <div id="lg-qr" hidden style="align-self:flex-start;background:#fff;padding:8px;border-radius:10px;line-height:0"></div>
-    <p class="small muted" id="lg-qr-t" hidden style="margin:0">Или наведите камеру телефона на QR-код и нажмите «Да, войти» в боте.</p>
+    <p class="small muted" id="lg-qr-t" hidden style="margin:0">Или наведите камеру телефона на QR-код и подтвердите в боте: «Да, войти» или, если вы здесь впервые, «Да, создать журнал».</p>
     <div class="row"><a class="btn" href="${esc(link)}" target="_blank" rel="noopener">Открыть @${esc(p.bot)}</a><button class="btn ghost" data-act="tg-login">Новый код</button></div>`;
   // A computer often has no Telegram app, so the link can't open there: offer a QR for the phone.
   if(matchMedia('(min-width:700px)').matches)loadQR().then(()=>{const el=document.getElementById('lg-qr');if(!el)return;
@@ -1482,10 +1507,14 @@ async function tgLoginPoll(p){
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState!=='visible'||!CLOUD||!document.getElementById('lg-tg'))return;
   let p=null;try{p=JSON.parse(sessionStorage.getItem('dz-login')||'null')}catch(e){}if(p)tgLoginPoll(p)});
 function onboardSheet(){
-  openSheet(`${sheetHead('Начало работы','Сервис пустой. С чего начнём?')}<div class="sheet-b">
-    <div class="blockt"><h3>Перенести данные с ноутбука</h3><p class="small muted">Выберите файл state-export.json — в нём клиенты, расписание, оплаты и прайс из версии на ноутбуке.</p>
-      <label class="drop" for="ob-file"><span>${ic('payments')}</span><span><b style="color:var(--ink)">Выбрать файл</b><br>state-export.json</span></label><input type="file" id="ob-file" accept="application/json,.json" hidden></div>
-  </div><div class="sheet-f"><span></span><button class="btn primary" data-act="ob-clean">Начать с чистого листа</button></div>`,'onboard');
+  openSheet(`${sheetHead('Добро пожаловать в Дорожку','Ваш журнал создан. Клиенты, расписание и оплаты видны только вам.')}<div class="sheet-b">
+    <ol class="prose" style="margin:0;padding-left:1.2em;display:flex;flex-direction:column;gap:10px">
+      <li><b>Впишите свои цены.</b> Тарифы уже есть, цены пустые. Можно добавить свои тарифы.</li>
+      <li><b>Добавьте клиентов.</b> Имя, телефон и тариф. Абонемент и остаток считаются сами.</li>
+      <li><b>Telegram уже подключён.</b> Напоминания, сводка дня и кнопки отметки придут в чат с ботом.</li></ol>
+    <details class="blockt small"><summary>Есть файл из версии на ноутбуке?</summary><p class="small muted">Выберите state-export.json — в нём клиенты, расписание, оплаты и прайс.</p>
+      <label class="drop" for="ob-file"><span>${ic('payments')}</span><span><b style="color:var(--ink)">Выбрать файл</b><br>state-export.json</span></label><input type="file" id="ob-file" accept="application/json,.json" hidden></details>
+  </div><div class="sheet-f"><button class="btn" data-act="ob-prices">Заполнить прайс</button><button class="btn primary" data-act="ob-client">Добавить клиента</button></div>`,'onboard');
 }
 async function boot(){
   if(CLOUD){

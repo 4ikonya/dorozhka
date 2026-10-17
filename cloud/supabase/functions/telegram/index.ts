@@ -1,8 +1,9 @@
 // Telegram for «Дорожка» in the cloud. One function, four kinds of callers:
 //   POST /telegram/tick            — pg_cron every minute (x-cron-secret, checked by the database): sends due reminders
-//   POST /telegram/hook/<secret>   — Telegram webhook: /start links the chat, /today, /next, /receipts, login confirm
-//   POST /telegram/login/start|poll — the login screen: sign in by confirming in the coach's bot
-//   POST /telegram/status|connect|test|disconnect — the signed-in coach from the app
+//   POST /telegram/hook/<secret>   — webhook of the shared bot: sign-in and sign-up, attendance buttons, /today, /next, /receipts
+//   POST /telegram/login/start|poll — the login screen: sign in (or create a journal) by confirming in the bot
+//   POST /telegram/status|test     — the signed-in coach from the app
+// Every coach has their own account and data; the bot tells them apart by their Telegram chat.
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
 import { applyAttendance, attendanceView, dayText, dueMessages, forgetPhotos, nextText, photoForms, receiptsReport, receiptsSoFar, startText, textChunks, wallNow } from '../_shared/schedule.mjs';
 
@@ -19,7 +20,19 @@ const cors = {
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { ...cors, 'content-type': 'application/json' } });
 
-type Link = { owner: string; token: string; bot_name: string; chat_id: number | null; hook_secret: string };
+// The shared bot (public.bot) and a coach's link to it: their account and their chat with the bot.
+type Bot = { token: string; bot_name: string; hook_secret: string };
+type Coach = { owner: string; chat_id: number | null };
+
+let botCache: Bot | null = null;
+async function getBot(): Promise<Bot> {
+  if (botCache) return botCache;
+  const { data } = await admin.from('bot').select('token, bot_name, hook_secret').maybeSingle();
+  if (!data) throw new Error('Бот сервиса не настроен');
+  return (botCache = data as Bot);
+}
+const coachByChat = async (chatId: number) =>
+  ((await admin.from('telegram_links').select('owner, chat_id').eq('chat_id', chatId).maybeSingle()).data as Coach | null);
 
 async function tg(token: string, method: string, body: Record<string, unknown> = {}) {
   const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
@@ -57,13 +70,13 @@ async function stateOf(owner: string) {
   return data?.data ?? null;
 }
 const nowFor = (S: any) => wallNow(new Date(), S?.settings?.tz || DEFAULT_TZ);
-const status = (l: Pick<Link, 'bot_name' | 'chat_id'> | null) =>
-  ({ connected: !!l, chatLinked: !!l?.chat_id, botName: l?.bot_name ?? '' });
+const status = (l: Coach | null, bot: Bot) => ({ connected: true, shared: true, chatLinked: !!l?.chat_id, botName: bot.bot_name });
 
 async function tick() {
-  const { data: links } = await admin.from('telegram_links').select('*').not('chat_id', 'is', null);
+  const bot = await getBot();
+  const { data: links } = await admin.from('telegram_links').select('owner, chat_id').not('chat_id', 'is', null);
   let sent = 0;
-  for (const l of (links ?? []) as Link[]) {
+  for (const l of (links ?? []) as Coach[]) {
     const S = await stateOf(l.owner);
     if (!S) continue;
     const { data: rows } = await admin.from('sent_reminders').select('key').eq('owner', l.owner);
@@ -74,10 +87,10 @@ async function tick() {
       if (error) continue;
       try {
         if (m.photos) {
-          const ids = await sendReport(l.token, l.chat_id as number, m);
+          const ids = await sendReport(bot.token, l.chat_id as number, m);
           if (m.purge) await dropSentPhotos(l.owner, ids, m.key.slice(9) + '-20');
         }
-        else await tg(l.token, 'sendMessage', { chat_id: l.chat_id, text: m.text, ...(m.reply_markup ? { reply_markup: m.reply_markup } : {}) });
+        else await tg(bot.token, 'sendMessage', { chat_id: l.chat_id, text: m.text, ...(m.reply_markup ? { reply_markup: m.reply_markup } : {}) });
         sent++;
       } catch (e) {
         await admin.from('sent_reminders').delete().eq('owner', l.owner).eq('key', m.key);
@@ -96,8 +109,7 @@ const fresh = () => new Date(Date.now() - LOGIN_TTL_MIN * 60_000).toISOString();
 const callerIp = (req: Request) => (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || req.headers.get('x-real-ip') || 'unknown';
 
 async function loginStart(req: Request) {
-  const { data: l } = await admin.from('telegram_links').select('bot_name').not('chat_id', 'is', null).limit(1).maybeSingle();
-  if (!l) return json({ error: 'Бот ещё не подключён. Войдите по почте и подключите его в разделе «Ещё».' }, 409);
+  const bot = await getBot();
   await admin.from('login_requests').delete().lt('created_at', new Date(Date.now() - 864e5).toISOString());
   const ip = callerIp(req);
   const { count: mine } = await admin.from('login_requests').select('nonce', { count: 'exact', head: true }).eq('ip', ip).gt('created_at', fresh());
@@ -107,7 +119,7 @@ async function loginStart(req: Request) {
   const code = String(100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000));
   const { error } = await admin.from('login_requests').insert({ nonce, code, ip });
   if (error) throw new Error(error.message);
-  return json({ nonce, code, bot: l.bot_name, ttl: LOGIN_TTL_MIN * 60 });
+  return json({ nonce, code, bot: bot.bot_name, ttl: LOGIN_TTL_MIN * 60 });
 }
 
 async function loginPoll(nonce: string) {
@@ -126,79 +138,105 @@ async function loginPoll(nonce: string) {
   return json({ status: 'ok', token_hash: link.properties.hashed_token });
 }
 
-async function loginAsk(l: Link, chatId: number, nonce: string) {
-  const { data: r } = await admin.from('login_requests').select('code').eq('nonce', nonce)
-    .is('approved_at', null).gt('created_at', fresh()).maybeSingle();
-  if (!r) { await tg(l.token, 'sendMessage', { chat_id: chatId, text: 'Ссылка для входа устарела. Нажмите «Войти через Telegram» на сайте ещё раз.' }); return; }
-  await tg(l.token, 'sendMessage', {
+const openRequest = async (nonce: string) =>
+  (await admin.from('login_requests').select('nonce, code').eq('nonce', nonce).is('approved_at', null).gt('created_at', fresh()).maybeSingle()).data;
+const approve = async (nonce: string, owner: string) =>
+  !!(await admin.from('login_requests').update({ owner, approved_at: new Date().toISOString() })
+    .eq('nonce', nonce).is('approved_at', null).gt('created_at', fresh()).select('nonce')).data?.length;
+const STALE = 'Ссылка для входа устарела. Нажмите «Начать через Telegram» на сайте ещё раз.';
+const WARN = 'Нажимайте, только если вы сами сейчас на dorozhka.vercel.app и видите этот код. Если ссылку прислал кто-то другой — нажмите «Это не я».';
+
+// A coach signs in; a chat the service has never seen is offered a new, empty journal instead.
+async function loginAsk(bot: Bot, chatId: number, nonce: string, coach: Coach | null) {
+  const r = await openRequest(nonce);
+  if (!r) return tg(bot.token, 'sendMessage', { chat_id: chatId, text: STALE });
+  const [title, yes, act] = coach ? ['Вход в Дорожку', 'Да, войти', 'login'] : ['Новый журнал в Дорожке', 'Да, создать журнал', 'reg'];
+  const intro = coach ? '' : '\nБудет создан ваш личный журнал: клиенты, расписание и оплаты видны только вам, напоминания приходят сюда.\n';
+  return tg(bot.token, 'sendMessage', {
     chat_id: chatId,
-    text: `Вход в Дорожку\n\nКод на экране: ${r.code}\nНажмите «Да, войти», только если вы сами сейчас входите на dorozhka.vercel.app и видите этот код. Если ссылку прислал кто-то другой — нажмите «Это не я».`,
-    reply_markup: { inline_keyboard: [[{ text: 'Да, войти', callback_data: `login|${nonce}|y` }, { text: 'Это не я', callback_data: `login|${nonce}|n` }]] },
+    text: `${title}\n${intro}\nКод на экране: ${r.code}\n${WARN}`,
+    reply_markup: { inline_keyboard: [[{ text: yes, callback_data: `${act}|${nonce}|y` }, { text: 'Это не я', callback_data: `${act}|${nonce}|n` }]] },
   });
 }
 
-async function loginAnswer(l: Link, q: any) {
-  const [, nonce, ans] = String(q.data).split('|');
-  let text = 'Вход отклонён.';
+// Creates the coach's account (no email or password: the address is internal and never mailed) and links the chat.
+async function register(chatId: number, from: any): Promise<string> {
+  const again = await coachByChat(chatId);
+  if (again) return again.owner;
+  const { data, error } = await admin.auth.admin.createUser({
+    email: `tg${chatId}@users.dorozhka.example`,
+    email_confirm: true,
+    user_metadata: { telegram_id: chatId, name: [from?.first_name, from?.last_name].filter(Boolean).join(' '), username: from?.username ?? null },
+  });
+  if (error || !data?.user) throw new Error(error?.message || 'Не удалось создать аккаунт');
+  const { error: e2 } = await admin.from('telegram_links').insert({ owner: data.user.id, chat_id: chatId });
+  if (e2) { await admin.auth.admin.deleteUser(data.user.id).catch(() => {}); throw new Error(e2.message); }
+  return data.user.id;
+}
+
+async function loginAnswer(bot: Bot, q: any, coach: Coach | null) {
+  const [act, nonce, ans] = String(q.data).split('|');
+  const chatId = q.message.chat.id;
+  let text = 'Вход отклонён. Если это были не вы — ничего делать не нужно.';
   if (ans === 'y') {
-    const { data: ok } = await admin.from('login_requests').update({ owner: l.owner, approved_at: new Date().toISOString() })
-      .eq('nonce', nonce).is('approved_at', null).gt('created_at', fresh()).select('nonce');
-    text = ok?.length ? 'Вход подтверждён — вернитесь в браузер.' : 'Ссылка для входа устарела. Нажмите «Войти через Telegram» ещё раз.';
+    if (!(await openRequest(nonce))) text = STALE;
+    else if (act === 'login' && coach) text = (await approve(nonce, coach.owner)) ? 'Вход подтверждён — вернитесь в браузер.' : STALE;
+    else if (act === 'reg') {
+      const owner = await register(chatId, q.from);
+      text = (await approve(nonce, owner))
+        ? 'Журнал создан, вход подтверждён — вернитесь в браузер.\n\nСюда будут приходить напоминания о занятиях, сводка дня в 7:00 и кнопки отметки посещения. Клиентам бот ничего не пишет.'
+        : STALE;
+    }
   } else {
     await admin.from('login_requests').delete().eq('nonce', nonce).is('approved_at', null);
   }
-  await tg(l.token, 'editMessageText', { chat_id: q.message.chat.id, message_id: q.message.message_id, text }).catch(() => {});
-  await tg(l.token, 'answerCallbackQuery', { callback_query_id: q.id }).catch(() => {});
+  await tg(bot.token, 'editMessageText', { chat_id: chatId, message_id: q.message.message_id, text }).catch(() => {});
+  await tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id }).catch(() => {});
 }
 
+const WELCOME = 'Это бот «Дорожки» — журнала тренера по плаванию.\n\nЧтобы создать свой журнал, откройте dorozhka.vercel.app и нажмите «Начать через Telegram». Если на компьютере нет Telegram, отправьте сюда код из 6 цифр с экрана входа.';
+
 async function webhook(secret: string, update: any) {
-  const { data } = await admin.from('telegram_links').select('*').eq('hook_secret', secret).maybeSingle();
-  const l = data as Link | null;
-  const q = update?.callback_query;
-  if (l && q) {
-    if (Number(l.chat_id) !== q.message?.chat?.id) return;
-    if (String(q.data).startsWith('login|')) return loginAnswer(l, q);
+  const bot = await getBot();
+  if (secret !== bot.hook_secret) return;
+  const q = update?.callback_query, m = update?.message;
+  const chat = q?.message?.chat ?? m?.chat;
+  if (!chat || chat.type !== 'private') return; // only one-to-one chats with a coach
+  const coach = await coachByChat(chat.id);
+  if (q) {
+    if (/^(login|reg)\|/.test(String(q.data))) return loginAnswer(bot, q, coach);
+    if (!coach) return tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id }).catch(() => {});
     // Bump the version so an open app sees the change and reloads instead of overwriting it.
-    const { data: row } = await admin.from('app_state').select('data, version').eq('owner', l.owner).maybeSingle();
+    const { data: row } = await admin.from('app_state').select('data, version').eq('owner', coach.owner).maybeSingle();
     const S = row?.data;
     const s = S && applyAttendance(S, q.data);
-    if (!s) { await tg(l.token, 'answerCallbackQuery', { callback_query_id: q.id, text: 'Это занятие уже удалено' }); return; }
+    if (!s) { await tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id, text: 'Это занятие уже удалено' }); return; }
     const { data: saved } = await admin.from('app_state').update({ data: S, version: row.version + 1, updated_at: new Date().toISOString() })
-      .eq('owner', l.owner).eq('version', row.version).select('version');
-    if (!saved?.length) { await tg(l.token, 'answerCallbackQuery', { callback_query_id: q.id, text: 'Данные только что изменились, нажмите ещё раз' }); return; }
+      .eq('owner', coach.owner).eq('version', row.version).select('version');
+    if (!saved?.length) { await tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id, text: 'Данные только что изменились, нажмите ещё раз' }); return; }
     const view = attendanceView(S, s);
-    await tg(l.token, 'editMessageText', { chat_id: q.message.chat.id, message_id: q.message.message_id, text: view.text, reply_markup: view.reply_markup }).catch(() => {});
-    await tg(l.token, 'answerCallbackQuery', { callback_query_id: q.id, text: 'Сохранено' });
+    await tg(bot.token, 'editMessageText', { chat_id: chat.id, message_id: q.message.message_id, text: view.text, reply_markup: view.reply_markup }).catch(() => {});
+    await tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id, text: 'Сохранено' });
     return;
   }
-  const m = update?.message;
-  if (!l || !m?.text) return;
+  if (!m?.text) return;
   const login = m.text.match(/^\/start login_([a-f0-9]{32})$/);
-  if (login) {
-    if (l.chat_id && Number(l.chat_id) === m.chat.id) await loginAsk(l, m.chat.id, login[1]);
-    return;
-  }
-  // The coach typed the code from the login screen (works when the link cannot open Telegram).
+  if (login) return loginAsk(bot, chat.id, login[1], coach);
+  // The code from the login screen, typed here (when the link cannot open Telegram): asks the same question.
   const typed = m.text.replace(/\s/g, '');
-  if (/^\d{6}$/.test(typed) && l.chat_id && Number(l.chat_id) === m.chat.id) {
+  if (/^\d{6}$/.test(typed)) {
     const { data: r } = await admin.from('login_requests').select('nonce').eq('code', typed).is('approved_at', null)
       .gt('created_at', fresh()).order('created_at', { ascending: false }).limit(1).maybeSingle();
-    const { data: ok } = r
-      ? await admin.from('login_requests').update({ owner: l.owner, approved_at: new Date().toISOString() })
-        .eq('nonce', r.nonce).is('approved_at', null).gt('created_at', fresh()).select('nonce')
-      : { data: null };
-    await tg(l.token, 'sendMessage', { chat_id: m.chat.id, text: ok?.length ? 'Вход подтверждён — вернитесь в браузер.' : 'Такого кода нет или он устарел. Нажмите «Новый код» на сайте и отправьте его сюда.' });
-    return;
+    if (!r) return tg(bot.token, 'sendMessage', { chat_id: chat.id, text: 'Такого кода нет или он устарел. Нажмите «Новый код» на сайте и отправьте его сюда.' });
+    return loginAsk(bot, chat.id, r.nonce, coach);
   }
-  const S = await stateOf(l.owner);
-  if (!l.chat_id && m.text.startsWith('/start')) {
-    await admin.from('telegram_links').update({ chat_id: m.chat.id }).eq('owner', l.owner);
-    await tg(l.token, 'sendMessage', { chat_id: m.chat.id, text: startText(S) });
-  } else if (Number(l.chat_id) === m.chat.id && S) {
-    if (m.text.startsWith('/today')) await tg(l.token, 'sendMessage', { chat_id: m.chat.id, text: dayText(S, nowFor(S)) });
-    else if (m.text.startsWith('/next')) await tg(l.token, 'sendMessage', { chat_id: m.chat.id, text: nextText(S, nowFor(S)) });
-    else if (m.text.startsWith('/receipts')) { const { from, to } = receiptsSoFar(nowFor(S)); await sendReport(l.token, m.chat.id, receiptsReport(S, from, to)); }
-  }
+  if (!coach) return tg(bot.token, 'sendMessage', { chat_id: chat.id, text: WELCOME });
+  const S = await stateOf(coach.owner);
+  if (m.text.startsWith('/start')) await tg(bot.token, 'sendMessage', { chat_id: chat.id, text: startText(S) });
+  else if (!S) return;
+  else if (m.text.startsWith('/today')) await tg(bot.token, 'sendMessage', { chat_id: chat.id, text: dayText(S, nowFor(S)) });
+  else if (m.text.startsWith('/next')) await tg(bot.token, 'sendMessage', { chat_id: chat.id, text: nextText(S, nowFor(S)) });
+  else if (m.text.startsWith('/receipts')) { const { from, to } = receiptsSoFar(nowFor(S)); await sendReport(bot.token, chat.id, receiptsReport(S, from, to)); }
 }
 
 Deno.serve(async (req) => {
@@ -226,41 +264,24 @@ Deno.serve(async (req) => {
     const { data: auth } = await admin.auth.getUser(jwt);
     const user = auth?.user;
     if (!user) return json({ error: 'Войдите в сервис' }, 401);
-    const { data: cur } = await admin.from('telegram_links').select('*').eq('owner', user.id).maybeSingle();
-    const link = cur as Link | null;
+    const { data: cur } = await admin.from('telegram_links').select('owner, chat_id').eq('owner', user.id).maybeSingle();
+    const link = cur as Coach | null;
+    const bot = await getBot();
 
-    if (path === '/status') return json(status(link));
-
-    if (path === '/connect') {
-      const { token } = await req.json().catch(() => ({}));
-      const clean = String(token ?? '').trim();
-      if (!/^\d+:[\w-]{20,}$/.test(clean)) return json({ error: 'Это не похоже на токен от @BotFather' }, 400);
-      const me = await tg(clean, 'getMe');
-      const hookSecret = crypto.randomUUID().replaceAll('-', '');
-      await tg(clean, 'setWebhook', { url: `${SB_URL}/functions/v1/telegram/hook/${hookSecret}`, allowed_updates: ['message', 'callback_query'] });
-      const row = { owner: user.id, token: clean, bot_name: me.username, chat_id: null, hook_secret: hookSecret };
-      const { error } = await admin.from('telegram_links').upsert(row);
-      if (error) throw new Error(error.message);
-      return json(status(row));
-    }
+    if (path === '/status') return json(status(link, bot));
 
     if (path === '/test') {
-      if (!link?.chat_id) return json({ error: 'Сначала нажмите Start в чате с ботом' }, 400);
+      if (!link?.chat_id) return json({ error: `Откройте @${bot.bot_name} и нажмите Start` }, 400);
       const S = await stateOf(user.id);
-      await tg(link.token, 'sendMessage', {
+      await tg(bot.token, 'sendMessage', {
         chat_id: link.chat_id,
         text: `Проверка связи: напоминания будут приходить сюда.${S ? `\n\n${dayText(S, nowFor(S))}` : ''}`,
       });
       return json({ ok: true });
     }
 
-    if (path === '/disconnect') {
-      if (link) {
-        await tg(link.token, 'deleteWebhook').catch(() => {});
-        await admin.from('telegram_links').delete().eq('owner', user.id);
-      }
-      return json(status(null));
-    }
+    // The bot is shared now: nobody brings their own token, and a coach's chat stays linked to their account.
+    if (path === '/connect' || path === '/disconnect') return json({ error: 'Бот общий для всех тренеров, подключать его не нужно' }, 410);
 
     return json({ error: 'Не найдено' }, 404);
   } catch (e) {
