@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Дорожка — журнал тренера по плаванию</title>
+<meta name="description" content="Журнал тренера по плаванию: расписание, посещения, абонементы и чеки в одном месте. Напоминания о занятиях и оплатах в Telegram. Вход и регистрация через Telegram.">
+<meta name="theme-color" content="#0A6383">
+<meta property="og:title" content="Дорожка — журнал тренера по плаванию">
+<meta property="og:description" content="Расписание, посещения, абонементы и чеки в одном месте. Напоминания в Telegram.">
+<meta property="og:image" content="/img/today-light.png">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon.svg">
+<link rel="manifest" href="/manifest.webmanifest">
+<script>
+// A coach who is already signed in, or opens the home-screen icon, goes straight to the journal.
+try{if(matchMedia('(display-mode: standalone)').matches||navigator.standalone||Object.keys(localStorage).some(k=>/^sb-.*-auth-token$/.test(k)))location.replace('/app')}catch(e){}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=Unbounded:wght@500;600;700&display=swap">
+<style>
+/* Лендинг «Волна»: светлая вода, живые волны на первом экране, пузырьки, телефон с настоящими экранами. Картинки берутся из docs/screenshots (на сайте — /img). */
+:root{--bg:#F2F9FB;--surface:#fff;--ink:#0D2230;--muted:#557080;--line:#D3E4EA;--accent:#0A6383;--accent-2:#1594BD;--rope:#DE4A30;--deep:#073F55;
+  --f-display:'Unbounded',system-ui,sans-serif;--f-body:'Golos Text',system-ui,-apple-system,sans-serif}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.55 var(--f-body);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+h1,h2,h3{font-family:var(--f-display);letter-spacing:-.02em;margin:0;text-wrap:balance}
+p{margin:0}
+a{color:inherit}
+.wrap{max-width:1160px;margin:0 auto;padding:0 20px}
+.btn{display:inline-flex;align-items:center;gap:10px;border-radius:999px;padding:14px 24px;font-weight:600;text-decoration:none;transition:transform .2s,box-shadow .2s,background .2s}
+.btn:hover{transform:translateY(-2px)}
+.btn.primary{background:var(--accent);color:#fff;box-shadow:0 10px 24px rgba(10,99,131,.3)}
+.btn.primary:hover{box-shadow:0 14px 30px rgba(10,99,131,.38)}
+.btn.ghost{background:rgba(255,255,255,.7);color:var(--ink);border:1px solid var(--line)}
+.btn svg{width:20px;height:20px}
+
+/* header */
+.top{position:fixed;inset:0 0 auto;z-index:20;transition:background .3s,box-shadow .3s}
+.top.scrolled{background:rgba(242,249,251,.88);backdrop-filter:blur(12px);box-shadow:0 1px 0 var(--line)}
+.top .in{display:flex;align-items:center;justify-content:space-between;height:68px}
+.logo{display:flex;align-items:center;gap:10px;font-family:var(--f-display);font-weight:600;font-size:1.15rem;text-decoration:none}
+.logo svg{width:34px;height:34px}
+.top nav{display:flex;gap:26px;font-weight:500;color:var(--muted)}
+.top nav a{text-decoration:none}.top nav a:hover{color:var(--ink)}
+.top .btn{padding:10px 18px;font-size:.95rem}
+
+/* hero */
+.hero{position:relative;min-height:100vh;min-height:100svh;padding:120px 0 220px;background:linear-gradient(180deg,#E3F4F9 0,#F2F9FB 70%);overflow:hidden}
+.hero .in{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr);gap:40px;align-items:center}
+.eyebrow{display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:.88rem;font-weight:500;color:var(--accent)}
+.eyebrow i{width:8px;height:8px;border-radius:50%;background:var(--rope);animation:pulse 2s infinite}
+@keyframes pulse{50%{transform:scale(1.6);opacity:.4}}
+.hero h1{font-size:clamp(2.3rem,5.4vw,4.2rem);line-height:1.04;margin:22px 0 20px}
+.hero h1 em{font-style:normal;background:linear-gradient(90deg,var(--accent),var(--accent-2),var(--accent));background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:shine 6s linear infinite}
+@keyframes shine{to{background-position:-200% 0}}
+.hero p.lead{font-size:1.2rem;color:var(--muted);max-width:34em}
+.cta{display:flex;flex-wrap:wrap;gap:12px;margin-top:32px}
+.note{margin-top:16px;font-size:.92rem;color:var(--muted)}
+
+.phone{position:relative;justify-self:center;width:300px;aspect-ratio:9/19.3;border-radius:46px;background:#0D2230;padding:11px;box-shadow:0 40px 80px rgba(7,63,85,.28),inset 0 0 0 2px #24414F;animation:float 6s ease-in-out infinite}
+@keyframes float{50%{transform:translateY(-14px) rotate(-1deg)}}
+.phone .scr{position:relative;width:100%;height:100%;border-radius:36px;overflow:hidden;background:#EDF3F5}
+.phone img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:top;opacity:0;transition:opacity .9s}
+.phone img.on{opacity:1}
+.phone .notch{position:absolute;top:10px;left:50%;transform:translateX(-50%);width:96px;height:26px;border-radius:20px;background:#0D2230;z-index:2}
+.bubble-tg{position:absolute;left:-120px;top:22%;width:250px;background:#fff;border-radius:18px 18px 18px 4px;padding:12px 14px;box-shadow:0 20px 40px rgba(7,63,85,.18);font-size:.88rem;line-height:1.4;animation:pop 7s ease-in-out infinite}
+.bubble-tg b{display:block;color:var(--accent);font-size:.78rem;margin-bottom:2px}
+.bubble-tg.two{left:auto;right:-90px;top:62%;border-radius:18px 18px 4px 18px;animation-delay:3.5s}
+@keyframes pop{0%,8%{opacity:0;transform:translateY(16px) scale(.94)}14%,46%{opacity:1;transform:none}54%,100%{opacity:0;transform:translateY(-10px)}}
+
+/* waves */
+.waves{position:absolute;left:0;right:0;bottom:0;height:200px;pointer-events:none}
+.waves svg{position:absolute;bottom:0;width:200%;height:100%}
+.waves .w1{animation:drift 14s linear infinite;opacity:.35}
+.waves .w2{animation:drift 9s linear infinite reverse;opacity:.55}
+.waves .w3{animation:drift 20s linear infinite}
+@keyframes drift{to{transform:translateX(-50%)}}
+.bubbles{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.bubbles span{position:absolute;bottom:-30px;border-radius:50%;border:1.5px solid rgba(10,99,131,.35);background:radial-gradient(circle at 30% 30%,rgba(255,255,255,.9),rgba(255,255,255,.1));animation:rise linear infinite}
+@keyframes rise{to{transform:translate(var(--dx),-110vh)}}
+
+/* sections */
+section{position:relative}
+.deep{background:var(--deep);color:#E8F5F9;padding:40px 0 110px}
+.deep .muted{color:#A7CAD7}
+.sect-h{max-width:720px;margin:0 auto 54px;text-align:center}
+.sect-h h2{font-size:clamp(1.8rem,3.6vw,2.7rem);line-height:1.12;margin-bottom:14px}
+.sect-h p{color:var(--muted);font-size:1.1rem}
+.deep .sect-h p{color:#A7CAD7}
+
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin:0 auto 80px}
+.stat{text-align:center;padding:20px 10px;border-radius:20px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1)}
+.stat b{display:block;font-family:var(--f-display);font-size:2.4rem;font-weight:600;color:#7FD8F2}
+.stat span{color:#A7CAD7;font-size:.95rem}
+
+.feats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
+.feat{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:24px;padding:26px;transition:transform .3s,background .3s}
+.feat:hover{transform:translateY(-6px);background:rgba(255,255,255,.09)}
+.feat .ic{width:52px;height:52px;border-radius:16px;display:grid;place-items:center;background:linear-gradient(135deg,#1594BD,#0A6383);margin-bottom:18px;box-shadow:0 10px 24px rgba(0,0,0,.25)}
+.feat .ic svg{width:26px;height:26px;stroke:#fff;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.feat h3{font-size:1.12rem;margin-bottom:8px}
+.feat p{color:#A7CAD7;font-size:.98rem}
+
+.wave-sep{display:block;width:100%;height:80px}
+
+.shots{padding:100px 0;background:var(--bg)}
+.shot-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:56px;align-items:center;margin-bottom:90px}
+.shot-row:nth-child(even) .shot{order:2}
+.shot{border-radius:22px;overflow:hidden;box-shadow:0 30px 60px rgba(7,63,85,.16);border:1px solid var(--line);background:#fff;transform:perspective(1200px) rotateY(-6deg) rotateX(3deg);transition:transform .6s}
+.shot-row:nth-child(even) .shot{transform:perspective(1200px) rotateY(6deg) rotateX(3deg)}
+.shot:hover{transform:none!important}
+.shot img{display:block;width:100%}
+.shot-txt h3{font-size:clamp(1.4rem,2.6vw,2rem);margin-bottom:14px;line-height:1.15}
+.shot-txt p{color:var(--muted);font-size:1.08rem}
+.shot-txt ul{margin:18px 0 0;padding:0;list-style:none;display:grid;gap:10px}
+.shot-txt li{display:flex;gap:10px;align-items:flex-start}
+.shot-txt li::before{content:"";flex:none;width:22px;height:22px;margin-top:2px;border-radius:50%;background:#D7EEF5 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230A6383' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 12l4 4 8-8'/%3E%3C/svg%3E") center/14px no-repeat}
+
+.steps{padding:30px 0 110px}
+.lane{position:relative;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:22px}
+.lane::before{content:"";position:absolute;left:8%;right:8%;top:34px;height:6px;border-radius:3px;background:repeating-linear-gradient(90deg,var(--rope) 0 18px,#fff 18px 24px,var(--accent) 24px 42px,#fff 42px 48px);opacity:.8}
+.step{position:relative;text-align:center;padding:0 10px}
+.step .n{position:relative;z-index:1;width:74px;height:74px;margin:0 auto 20px;border-radius:50%;display:grid;place-items:center;background:#fff;border:2px solid var(--line);font-family:var(--f-display);font-size:1.6rem;font-weight:600;color:var(--accent);box-shadow:0 10px 24px rgba(7,63,85,.1)}
+.step h3{font-size:1.1rem;margin-bottom:8px}
+.step p{color:var(--muted)}
+.swimmer{position:absolute;top:22px;left:8%;width:34px;height:30px;z-index:2;offset-path:none;animation:swim 9s ease-in-out infinite}
+@keyframes swim{0%{left:6%}50%{left:86%;transform:scaleX(1)}50.1%{transform:scaleX(-1)}100%{left:6%;transform:scaleX(-1)}}
+
+.trust{padding:0 0 110px}
+.trust .card{display:grid;grid-template-columns:auto minmax(0,1fr);gap:26px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:28px;padding:34px;box-shadow:0 20px 50px rgba(7,63,85,.08)}
+.trust .lock{width:76px;height:76px;border-radius:22px;background:#E3F4F9;display:grid;place-items:center}
+.trust .lock svg{width:38px;height:38px;stroke:var(--accent);fill:none;stroke-width:1.8}
+.trust h3{font-size:1.3rem;margin-bottom:8px}.trust p{color:var(--muted)}
+
+.faq{padding:0 0 110px}
+.faq details{background:#fff;border:1px solid var(--line);border-radius:18px;padding:0 22px;margin-bottom:12px;transition:box-shadow .3s}
+.faq details[open]{box-shadow:0 14px 34px rgba(7,63,85,.08)}
+.faq summary{cursor:pointer;list-style:none;display:flex;justify-content:space-between;gap:16px;padding:20px 0;font-weight:600;font-size:1.05rem}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary::after{content:"+";font-family:var(--f-display);color:var(--accent);font-size:1.4rem;line-height:1;transition:transform .3s}
+.faq details[open] summary::after{transform:rotate(45deg)}
+.faq details p{padding:0 0 20px;color:var(--muted)}
+
+.final{position:relative;overflow:hidden;background:linear-gradient(160deg,#0A6383,#073F55);color:#fff;text-align:center;padding:120px 0 140px}
+.final h2{font-size:clamp(2rem,4.4vw,3.2rem);margin-bottom:16px}
+.final p{color:#B9DDE8;font-size:1.12rem;margin-bottom:32px}
+.final .btn.primary{background:#fff;color:var(--accent);box-shadow:0 14px 30px rgba(0,0,0,.25)}
+.final .bubbles span{border-color:rgba(255,255,255,.35);background:radial-gradient(circle at 30% 30%,rgba(255,255,255,.5),rgba(255,255,255,.04))}
+footer{background:#052F40;color:#86AEBD;padding:28px 0;font-size:.92rem}
+footer .in{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+
+/* reveal on scroll */
+.rv{opacity:0;transform:translateY(34px);transition:opacity .8s cubic-bezier(.2,.7,.2,1),transform .8s cubic-bezier(.2,.7,.2,1)}
+.rv.shown{opacity:1;transform:none}
+.rv.d1{transition-delay:.1s}.rv.d2{transition-delay:.2s}.rv.d3{transition-delay:.3s}.rv.d4{transition-delay:.4s}.rv.d5{transition-delay:.5s}
+
+@media (max-width:900px){
+  .top nav{display:none}
+  .hero{padding:100px 0 190px}
+  .hero .in{grid-template-columns:minmax(0,1fr);text-align:center}
+  .hero p.lead{margin:0 auto}.cta{justify-content:center}
+  .phone{width:250px;margin-top:20px}
+  .bubble-tg{left:-60px;width:210px}.bubble-tg.two{right:-50px}
+  .stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .feats{grid-template-columns:minmax(0,1fr)}
+  .shot-row{grid-template-columns:minmax(0,1fr);gap:28px;margin-bottom:64px}
+  .shot-row:nth-child(even) .shot{order:0}
+  .lane{grid-template-columns:minmax(0,1fr);gap:34px}.lane::before,.swimmer{display:none}
+  .trust .card{grid-template-columns:minmax(0,1fr);text-align:center}.trust .lock{margin:0 auto}
+}
+@media (max-width:420px){.bubble-tg{display:none}}
+@media (prefers-reduced-motion:reduce){*,*::before{animation:none!important;transition:none!important}.rv{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<header class="top" id="top"><div class="wrap in">
+  <a class="logo" href="#"><svg viewBox="0 0 512 512" aria-hidden="true"><rect width="512" height="512" rx="112" fill="#0A6383"/><g stroke-width="26" stroke-linecap="round" fill="none"><path d="M96 200c40-28 80-28 120 0s80 28 120 0 80-28 100-14" stroke="#EDF3F5"/><path d="M96 312c40-28 80-28 120 0s80 28 120 0 80-28 100-14" stroke="#EDF3F5" opacity=".55"/></g><g fill="#DE4A30"><circle cx="128" cy="408" r="22"/><circle cx="208" cy="408" r="22"/><circle cx="288" cy="408" r="22"/><circle cx="368" cy="408" r="22"/></g></svg>Дорожка</a>
+  <nav><a href="#feats">Возможности</a><a href="#how">Как начать</a><a href="#faq">Вопросы</a></nav>
+  <a class="btn primary" href="/app">Войти</a>
+</div></header>
+
+<section class="hero">
+  <div class="bubbles" data-bubbles="18"></div>
+  <div class="wrap in">
+    <div>
+      <span class="eyebrow rv"><i></i>Для тренеров по плаванию</span>
+      <h1 class="rv d1">Журнал тренера, который <em>помнит всё</em> за вас</h1>
+      <p class="lead rv d2">Расписание, посещения, абонементы и чеки — в одном месте. Напоминания о занятиях и оплатах приходят вам в Telegram.</p>
+      <div class="cta rv d3">
+        <a class="btn primary" href="/app"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.9 4.3 18.7 19.4c-.2 1-.9 1.3-1.7.8l-4.8-3.5-2.3 2.2c-.3.3-.5.5-1 .5l.3-4.9 8.9-8c.4-.3-.1-.5-.6-.2l-11 6.9-4.7-1.5c-1-.3-1-1 .2-1.5L20.6 3c.9-.3 1.6.2 1.3 1.3z"/></svg>Начать через Telegram</a>
+        <a class="btn ghost" href="/demo">Посмотреть демо</a>
+      </div>
+      <p class="note rv d4">Без почты и паролей: вход — одно нажатие в Telegram.</p>
+    </div>
+    <div class="phone rv d2" aria-label="Экраны приложения">
+      <div class="notch"></div>
+      <div class="scr"><img class="on" src="/docs/screenshots/mobile-today.png" alt="Экран «Сегодня»"><img src="/docs/screenshots/mobile-attendance.png" alt="Отметка посещения"><img src="/docs/screenshots/mobile-payments.png" alt="Оплаты и чеки"></div>
+      <div class="bubble-tg"><b>Дорожка · бот</b>Через 2 ч: 19:00 — Олжас. С прошлого раза: попробовать 100 м без остановки.</div>
+      <div class="bubble-tg two"><b>Дорожка · бот</b>Нужна оплата: Тимур (осталось 0)</div>
+    </div>
+  </div>
+  <div class="waves" aria-hidden="true">
+    <svg class="w1" viewBox="0 0 2880 200" preserveAspectRatio="none"><path fill="#9ED7E8" d="M0 90c240 40 480 40 720 0s480-40 720 0 480 40 720 0 480-40 720 0v110H0z"/></svg>
+    <svg class="w2" viewBox="0 0 2880 200" preserveAspectRatio="none"><path fill="#3AA7C8" d="M0 120c240-36 480-36 720 0s480 36 720 0 480-36 720 0 480 36 720 0v80H0z"/></svg>
+    <svg class="w3" viewBox="0 0 2880 200" preserveAspectRatio="none"><path fill="#073F55" d="M0 150c240 24 480 24 720 0s480-24 720 0 480 24 720 0 480-24 720 0v50H0z"/></svg>
+  </div>
+</section>
+
+<section class="deep" id="feats">
+  <div class="wrap">
+    <div class="stats">
+      <div class="stat rv"><b data-count="5">0</b><span>типов занятий</span></div>
+      <div class="stat rv d1"><b data-count="1">0</b><span>касание на отметку</span></div>
+      <div class="stat rv d2"><b data-count="3">0</b><span>напоминания в день</span></div>
+      <div class="stat rv d3"><b data-count="0">0</b><span>сообщений клиентам</span></div>
+    </div>
+    <div class="sect-h rv"><h2>Всё, что вы держите в голове и в заметках</h2><p>Сервис сделан вместе с тренером по плаванию и считает так, как считаете вы.</p></div>
+    <div class="feats">
+      <div class="feat rv"><div class="ic"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg></div><h3>Расписание на неделю</h3><p>Грудничковое, индивидуальное, сплит, мини-группы и группы. Длительность каждого типа — ваша.</p></div>
+      <div class="feat rv d1"><div class="ic"><svg viewBox="0 0 24 24"><path d="M5 12l4 4 10-10"/></svg></div><h3>Посещения в одно касание</h3><p>Был, не предупредил, предупредил — у каждого отдельно. Кнопки приходят прямо в Telegram.</p></div>
+      <div class="feat rv d2"><div class="ic"><svg viewBox="0 0 24 24"><path d="M4 20h16M7 16v-5M12 16V6M17 16v-8"/></svg></div><h3>Абонементы считают сами</h3><p>Сколько прошло, сколько осталось и кому пора платить. Пропуск с предупреждением сам переносится в конец.</p></div>
+      <div class="feat rv"><div class="ic"><svg viewBox="0 0 24 24"><path d="M6 3h12v18l-2-1.4-2 1.4-2-1.4-2 1.4-2-1.4L6 21z"/><path d="M9 8h6M9 12h6"/></svg></div><h3>Чеки по номеру телефона</h3><p>Фото чека Kaspi — и сумма с датой подставятся сами. Чеки клиента всегда под рукой в его карточке.</p></div>
+      <div class="feat rv d1"><div class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg></div><h3>Подбор свободного времени</h3><p>Укажите, сколько тренировок нужно клиенту, — сервис предложит свободные окна на весь абонемент.</p></div>
+      <div class="feat rv d2"><div class="ic"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h7"/></svg></div><h3>Заметки к следующему разу</h3><p>Что получилось и над чем работать. Бот напомнит об этом перед занятием.</p></div>
+    </div>
+  </div>
+</section>
+<svg class="wave-sep" viewBox="0 0 1440 80" preserveAspectRatio="none" aria-hidden="true" style="background:var(--bg);margin-top:-1px"><path fill="#073F55" d="M0 0h1440v30c-240 40-480 40-720 0S240-10 0 30z"/></svg>
+
+<section class="shots">
+  <div class="wrap">
+    <div class="shot-row">
+      <div class="shot rv"><img src="/docs/screenshots/today-light.png" alt="Экран «Сегодня»" loading="lazy"></div>
+      <div class="shot-txt rv d1"><h3>Открыли утром — и уже знаете, что делать</h3><p>Следующее занятие с заметкой с прошлого раза, список на день и кому нужно напомнить об оплате.</p><ul><li>Сводка дня в Telegram в 7:00</li><li>Напоминание за 30 минут, 2 часа или сутки</li></ul></div>
+    </div>
+    <div class="shot-row">
+      <div class="shot rv"><img src="/docs/screenshots/schedule-week.png" alt="Расписание на неделю" loading="lazy"></div>
+      <div class="shot-txt rv d1"><h3>Неделя целиком, по дорожкам и типам</h3><p>Нажмите на пустое место — и занятие создано. Абонемент на 8 тренировок встанет поровну на каждую неделю.</p><ul><li>Своё время для каждого дня</li><li>«Я не работаю» — отменит занятия без списания</li></ul></div>
+    </div>
+    <div class="shot-row">
+      <div class="shot rv"><img src="/docs/screenshots/payments.png" alt="Оплаты и чеки" loading="lazy"></div>
+      <div class="shot-txt rv d1"><h3>Оплаты не теряются</h3><p>Каждая оплата привязана к номеру телефона. Видно, на сколько занятий хватит и до какого числа.</p><ul><li>Ваш прайс: разовое, 8 или 10 занятий</li><li>Сплит и двое детей — одна оплата на двоих</li></ul></div>
+    </div>
+  </div>
+</section>
+
+<section class="steps" id="how">
+  <div class="wrap">
+    <div class="sect-h rv"><h2>Три шага до первого занятия</h2><p>Никаких установок: всё работает в браузере на телефоне и ноутбуке.</p></div>
+    <div class="lane">
+      <svg class="swimmer" viewBox="0 0 34 30" aria-hidden="true"><circle cx="26" cy="9" r="5" fill="#DE4A30"/><path d="M2 18c4-5 10-7 18-5l6 2" stroke="#0A6383" stroke-width="3.5" fill="none" stroke-linecap="round"/><path d="M0 26c4-3 8-3 12 0s8 3 12 0 8-3 10-1" stroke="#1594BD" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+      <div class="step rv"><div class="n">1</div><h3>Войдите через Telegram</h3><p>Нажмите «Начать» и подтвердите в боте. Журнал создаётся сразу.</p></div>
+      <div class="step rv d1"><div class="n">2</div><h3>Добавьте клиентов и прайс</h3><p>Имя, телефон, тариф. Цены и тарифы — ваши, можно добавить свои.</p></div>
+      <div class="step rv d2"><div class="n">3</div><h3>Тренируйте</h3><p>Бот напомнит о занятиях, отметках и оплатах. Остальное посчитается само.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="trust"><div class="wrap"><div class="card rv">
+  <div class="lock"><svg viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg></div>
+  <div><h3>Ваши клиенты видны только вам</h3><p>У каждого тренера свой отдельный журнал. Бот пишет только вам — клиентам он не отправляет ничего.</p></div>
+</div></div></section>
+
+<section class="faq" id="faq"><div class="wrap" style="max-width:820px">
+  <div class="sect-h rv"><h2>Вопросы</h2></div>
+  <details class="rv"><summary>Нужны ли почта и пароль?</summary><p>Нет. Вход и регистрация — через Telegram: нажимаете «Начать» и подтверждаете в боте.</p></details>
+  <details class="rv"><summary>Можно пользоваться с телефона?</summary><p>Да. Откройте сайт и добавьте его на главный экран — он будет открываться как приложение.</p></details>
+  <details class="rv"><summary>Клиенты будут получать сообщения?</summary><p>Нет. Бот пишет только тренеру. Для клиентов есть готовые тексты, которые вы отправляете сами.</p></details>
+  <details class="rv"><summary>На компьютере нет Telegram — как войти?</summary><p>На экране входа будет код из 6 цифр и QR-код. Отправьте код боту с телефона — и вход на компьютере подтвердится.</p></details>
+</div></section>
+
+<section class="final">
+  <div class="bubbles" data-bubbles="14"></div>
+  <div class="wrap" style="position:relative">
+    <h2 class="rv">Ныряйте — вода тёплая</h2>
+    <p class="rv d1">Первый клиент в журнале — через пару минут.</p>
+    <a class="btn primary rv d2" href="/app">Начать через Telegram</a>
+  </div>
+</section>
+<footer><div class="wrap in"><span>© Дорожка, журнал тренера по плаванию</span><span>Сделано для тренеров Казахстана</span></div></footer>
+
+<script>
+const still=matchMedia('(prefers-reduced-motion: reduce)').matches;
+// Bubbles of random size and speed.
+document.querySelectorAll('[data-bubbles]').forEach(box=>{if(still)return;for(let i=0;i<+box.dataset.bubbles;i++){const b=document.createElement('span'),s=6+Math.random()*22;
+  b.style.cssText=`left:${Math.random()*100}%;width:${s}px;height:${s}px;animation-duration:${9+Math.random()*12}s;animation-delay:${-Math.random()*20}s;--dx:${(Math.random()-.5)*120}px`;box.appendChild(b)}});
+// Header background after the first scroll.
+const hdr=document.getElementById('top');addEventListener('scroll',()=>hdr.classList.toggle('scrolled',scrollY>20),{passive:true});
+// Reveal blocks and count numbers up as they come into view.
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(!e.isIntersecting)return;e.target.classList.add('shown');io.unobserve(e.target);
+  e.target.querySelectorAll('[data-count]').forEach(n=>{const to=+n.dataset.count,t0=performance.now();const step=t=>{const k=Math.min(1,(t-t0)/1200);n.textContent=Math.round(to*(1-Math.pow(1-k,3)));if(k<1)requestAnimationFrame(step)};requestAnimationFrame(step)})}),{threshold:.15});
+document.querySelectorAll('.rv').forEach(el=>io.observe(el));
+// The phone cycles through real screens.
+const imgs=[...document.querySelectorAll('.phone img')];let k=0;if(!still)setInterval(()=>{imgs[k].classList.remove('on');k=(k+1)%imgs.length;imgs[k].classList.add('on')},3200);
+</script>
+</body>
+</html>
