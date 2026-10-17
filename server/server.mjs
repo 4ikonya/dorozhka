@@ -95,7 +95,7 @@ async function tick() {
   if (!t.token || !t.chat_id) return;
   const { state: S } = readState();
   if (!S) return;
-  for (const m of dueMessages(S, wnow(S), wasSent)) {
+  for (const m of dueMessages(S, wnow(S), wasSent, { receipts: true })) {
     if (!m.photos) { await deliver(m.key, m.text, m.reply_markup ? { reply_markup: m.reply_markup } : {}); continue; }
     markSent(m.key);
     try { const ids = await sendReport(m); if (m.purge) dropSentPhotos(ids, m.key.slice(9) + '-20'); console.log(`[telegram] ${m.key}`); } catch (e) { unmarkSent(m.key); console.error(`[telegram] ${m.key}: ${e.message}`); }
@@ -127,7 +127,7 @@ async function pollLoop() {
         const cur = tgRow();
         if (!cur.chat_id && m.text.startsWith('/start')) {
           db.prepare('UPDATE telegram SET chat_id = ? WHERE id = 1').run(m.chat.id);
-          await send(startText(readState().state));
+          await send(startText(readState().state, { receipts: true }));
           await tick();
         } else if (Number(cur.chat_id) === m.chat.id) {
           const { state: S } = readState();

@@ -74,9 +74,10 @@ export function nextText(S, wnow) {
   const next = S.sessions.filter((s) => !s.cancelled && activeClients(S, s).length && startOf(s) > wnow).sort(byStart)[0];
   return next ? reminderText(S, next, wnow) : 'Ближайших занятий нет.';
 }
-export function startText(S) {
+/** opts.receipts: this coach has the monthly receipts report (a feature of the service owner only). */
+export function startText(S, opts = {}) {
   const lead = LEAD[S?.settings?.remindCoach || '2h'] || 120;
-  return `Готово. Буду напоминать о занятиях за ${lead >= 60 ? `${lead / 60} ч` : `${lead} мин`} и присылать сводку дня в 7:00.\nКаждое 20-е число пришлю чеки за месяц (с 20-го по 19-е).\nКоманды: /today — занятия на сегодня, /next — ближайшее, /receipts — чеки с 20-го числа по сегодня.`;
+  return `Готово. Буду напоминать о занятиях за ${lead >= 60 ? `${lead / 60} ч` : `${lead} мин`} и присылать сводку дня в 7:00.\n${opts.receipts ? 'Каждое 20-е число пришлю чеки за месяц (с 20-го по 19-е).\n' : ''}Команды: /today — занятия на сегодня, /next — ближайшее${opts.receipts ? ', /receipts — чеки с 20-го числа по сегодня' : ''}.`;
 }
 // c.pause is the current or next pause; c.pauses keeps the finished ones (same as the app).
 export const isPaused = (c, date) => [...(c?.pauses || []), ...(c?.pause ? [c.pause] : [])].some((p) => p.from <= date && date <= p.to);
@@ -239,7 +240,7 @@ export function forgetPhotos(S, ids, day) {
 }
 
 /** Messages that are due now and not yet sent, each with the key that marks it as sent. */
-export function dueMessages(S, wnow, wasSent) {
+export function dueMessages(S, wnow, wasSent, opts = {}) {
   const out = [];
   if (!Array.isArray(S?.sessions) || !Array.isArray(S?.clients)) return out;
   const leadKey = S.settings?.remindCoach || '2h', lead = (LEAD[leadKey] || 120) * 60000;
@@ -259,7 +260,7 @@ export function dueMessages(S, wnow, wasSent) {
   }
   // On the 20th from 09:00 (also on vacation days; caught up on the 21st–22nd if the bot was down): every receipt from the previous 20th to the 19th.
   const rk = `receipts:${today.slice(0, 7)}`;
-  if (S.settings?.monthlyReceipts !== false && (wnow.getUTCDate() > RECEIPT_DAY || hm(wnow) >= '09:00') && wnow.getUTCDate() >= RECEIPT_DAY && wnow.getUTCDate() <= RECEIPT_DAY + 2 && !wasSent(rk)) {
+  if (opts.receipts && S.settings?.monthlyReceipts !== false && (wnow.getUTCDate() > RECEIPT_DAY || hm(wnow) >= '09:00') && wnow.getUTCDate() >= RECEIPT_DAY && wnow.getUTCDate() <= RECEIPT_DAY + 2 && !wasSent(rk)) {
     const { from, to } = receiptsPeriod(wnow);
     out.push({ key: rk, purge: true, ...receiptsReport(S, from, to, true) });
   }

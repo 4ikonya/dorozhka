@@ -92,7 +92,7 @@ a.btn{color:var(--ink);text-decoration:none}
 .wdays label{position:relative;cursor:pointer;min-width:44px;text-align:center}.wdays input[type=checkbox]{position:absolute;opacity:0;pointer-events:none}
 .wdays label:has(input:checked){background:var(--ink);border-color:var(--ink);color:var(--bg)}.wdays label:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
 .pl-days{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px 12px}.pl-day{display:flex;align-items:center;gap:8px}.pl-day .inp{flex:1;min-width:0}.pl-day:not(:has(input:checked)) input[type=time]{visibility:hidden}
-.hrow{display:flex;align-items:center;gap:8px;flex-wrap:nowrap}.hrow .inp{width:auto;flex:1;min-width:0}.hrow:not(:has(input:checked)) input[type=time]{opacity:.4}
+.hrow{display:flex;align-items:center;gap:8px;flex-wrap:nowrap}.durs{display:flex;flex-direction:column;gap:6px}.durs .inp{max-width:90px}.hrow .inp{width:auto;flex:1;min-width:0}.hrow:not(:has(input:checked)) input[type=time]{opacity:.4}
 .chip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 9px;font-size:.76rem;font-weight:600;white-space:nowrap;
   background:color-mix(in srgb,var(--tc,var(--muted)) 15%,transparent);color:color-mix(in srgb,var(--tc,var(--muted)) 78%,var(--ink))}
 .t-baby{--tc:var(--t-baby)} .t-individual{--tc:var(--t-individual)} .t-group{--tc:var(--t-group)} .t-split{--tc:var(--t-split)} .t-minigroup{--tc:var(--t-minigroup)} .k-trial{--tc:var(--accent)} .k-makeup{--tc:var(--warn)}
@@ -348,7 +348,11 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
 const TYPES={baby:{label:'Грудничковое'},individual:{label:'Индивидуальное'},split:{label:'Сплит'},minigroup:{label:'Мини-группа'},group:{label:'Групповое'}};
 const GROUPISH=t=>t==='group'||t==='minigroup';
 const SKIND={trial:'Пробное',makeup:'Отработка'};
+// Default length of each session type; every coach sets their own in Settings (S.settings.dur).
 const DUR={baby:30,individual:45,split:45,minigroup:45,group:45};
+const durFor=t=>Math.min(240,Math.max(10,Math.round(+S?.settings?.dur?.[t]||DUR[t]||45)));
+// Planned sessions of this type, not marked yet, whose length differs from the setting.
+const durStale=t=>{const now=new Date(),d=durFor(t);return S.sessions.filter(s=>s.type===t&&!s.cancelled&&startDT(s)>now&&!Object.keys(s.att||{}).length&&s.dur!==d)};
 const PLACE={baby:'Малая чаша',individual:'Дорожка 5',split:'Дорожка 4',minigroup:'Дорожка 3',group:'Дорожка 2'};
 const KINDS={baby:'Грудничок',kid:'Ребёнок',adult:'Взрослый'};
 // A group needs at least one person and has no upper limit.
@@ -516,6 +520,8 @@ function persist(){if(SERVER.on){SERVER.dirty=true;clearTimeout(SERVER.timer);SE
   try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){toast('Не удалось сохранить','В браузере закончилось место для демо-данных. Удалите пару фото чеков.')}}
 // Real data (cloud or the laptop server), not the demo.
 const REAL=()=>!!(CLOUD||SERVER.on);
+// The monthly receipts report is the service owner's own feature: the cloud says who has it; the laptop server is the owner's.
+const hasReceipts=()=>CLOUD?!!UI.tg?.receipts:SERVER.on;
 const SERVER={on:false,version:0,timer:null,dirty:false,offline:false};
 const UI={tg:null,view:'today',week:0,selDay:null,cFilter:'all',cQuery:'',pQuery:'',period:'month',rType:'all',pendingImg:null,openSheet:null};
 
@@ -601,7 +607,7 @@ function freeTimes(dates,dur,ignore,d){const h=workHours()[d];if(!h.on||!dates.l
 function combos(arr,k){const out=[],cur=[];const rec=i=>{if(cur.length===k){out.push(cur.slice());return}for(let j=i;j<arr.length;j++){cur.push(arr[j]);rec(j+1);cur.pop()}};rec(0);return out}
 /* Ready-made sets for the client: perWeek working days, free on every date of the package.
    Same time on all days first, then days spread over the week, then closest to the time already entered. */
-function suggestSets(c,p,ignore){const dur=DUR[clientType(c)],days=workHours().map((h,i)=>h.on?i:-1).filter(i=>i>=0),k=Math.min(p.perWeek,days.length);
+function suggestSets(c,p,ignore){const dur=durFor(clientType(c)),days=workHours().map((h,i)=>h.on?i:-1).filter(i=>i>=0),k=Math.min(p.perWeek,days.length);
   if(!k||!p.n||!p.from)return [];const pref=toMin(Object.values(p.slots)[0]||'18:00'),near=f=>f.reduce((a,x)=>Math.abs(x-pref)<Math.abs(a-pref)?x:a),sets=[];
   for(const cb of combos(days,k)){const dates=planDates(p.from,cb,p.n);if(dates.length<p.n)continue;
     const free=cb.map(d=>freeTimes(dates.filter(x=>wd(pdate(x))===d),dur,ignore,d));if(free.some(f=>!f.length))continue;
@@ -624,7 +630,7 @@ function syncMakeup(s){if(s.groupId||s.kind==='trial'||s.cancelled)return null;
   pick=pick||first;if(!pick)return null;
   const add={id:uid('s'),date:pick.day,start:pick.start,dur:s.dur,type:s.type,kind:'makeup',groupId:null,clientIds:[...s.clientIds],place:s.place||'',att:{},log:'',next:'',cancelled:false,extOf:s.id};
   S.sessions.push(add);S.sessions.sort(byStart);return add}
-function planConflicts(c,p,ignore){const dur=DUR[clientType(c)];return planSlots(p.from,p.slots,p.n).map(x=>({...x,s:clash(x.date,x.time,dur,ignore)})).filter(x=>x.s)}
+function planConflicts(c,p,ignore){const dur=durFor(clientType(c));return planSlots(p.from,p.slots,p.n).map(x=>({...x,s:clash(x.date,x.time,dur,ignore)})).filter(x=>x.s)}
 function planWarn(c,p){const cf=planConflicts(c,p,planIgnore(c.id));if(!cf.length)return '';
   return `Занято: ${cf.slice(0,3).map(x=>`${DAY[wd(pdate(x.date))]} ${fdateS(x.date)} ${x.time} — ${esc(shortTitle(x.s))}`).join('; ')}${cf.length>3?` и ещё ${cf.length-3}`:''}. Поставить всё равно можно.`}
 const setsText=(sets,p)=>`Здравствуйте! Могу предложить время для тренировок: ${sets.map(s=>{const ks=Object.keys(s.slots).map(Number).sort(),one=new Set(ks.map(k=>s.slots[k])).size===1;
@@ -898,11 +904,13 @@ function vPlan(){
         <label class="toggle" for="set-remind"><span><b>Напоминать мне в Telegram</b><br><span class="small muted">Перед каждым занятием. Клиентам бот ничего не пишет.</span></span><select class="inp" id="set-remind" data-set="remindCoach" style="width:auto"><option value="30m" ${st.remindCoach==='30m'?'selected':''}>за 30 мин</option><option value="2h" ${st.remindCoach==='2h'?'selected':''}>за 2 часа</option><option value="1d" ${st.remindCoach==='1d'?'selected':''}>за сутки</option></select></label>
         <label class="toggle" for="set-digest"><span><b>Утренняя сводка в 7:00</b><br><span class="small muted">Кто сегодня придёт и у кого кончается абонемент</span></span><input class="sw" type="checkbox" id="set-digest" data-set="morningDigest" ${st.morningDigest?'checked':''}></label>
         <label class="toggle" for="set-tgatt"><span><b>Кнопки отметки в Telegram</b><br><span class="small muted">Через 10 минут после занятия бот пришлёт «был / не предупредил / предупредил»</span></span><input class="sw" type="checkbox" id="set-tgatt" data-set="tgAttendance" ${st.tgAttendance!==false?'checked':''}></label>
-        <label class="toggle" for="set-receipts"><span><b>Чеки за месяц 20-го числа</b><br><span class="small muted">В 9:00 бот пришлёт список оплат и фото чеков с 20-го числа прошлого месяца по 19-е. После отправки фото удаляются из сервиса и остаются в чате, сами оплаты сохраняются. Команда /receipts — чеки с 20-го по сегодня, без удаления.</span></span><input class="sw" type="checkbox" id="set-receipts" data-set="monthlyReceipts" ${st.monthlyReceipts!==false?'checked':''}></label>
+${hasReceipts()?`<label class="toggle" for="set-receipts"><span><b>Чеки за месяц 20-го числа</b><br><span class="small muted">В 9:00 бот пришлёт список оплат и фото чеков с 20-го числа прошлого месяца по 19-е. После отправки фото удаляются из сервиса и остаются в чате, сами оплаты сохраняются. Команда /receipts — чеки с 20-го по сегодня, без удаления.</span></span><input class="sw" type="checkbox" id="set-receipts" data-set="monthlyReceipts" ${st.monthlyReceipts!==false?'checked':''}></label>`:''}
         </div>
         <div class="blockt"><h3>Рабочие часы</h3><p class="small muted">По ним карточка клиента подбирает свободное время. Между занятиями остаётся перерыв.</p>
           <div class="wdays" style="display:flex;flex-direction:column;gap:6px">${workHours().map((h,i)=>`<div class="hrow"><label class="fchip"><input type="checkbox" data-hours="${i}" data-hf="on" ${h.on?'checked':''}>${DAY[i]}</label><input class="inp" type="time" step="600" data-hours="${i}" data-hf="from" value="${h.from}" aria-label="${DAYF[i]}, с"><span class="muted">–</span><input class="inp" type="time" step="600" data-hours="${i}" data-hf="to" value="${h.to}" aria-label="${DAYF[i]}, до"></div>`).join('')}</div>
           <div class="grid2"><label class="f" for="set-break">Перерыв, мин<input class="inp" type="number" min="0" max="60" step="5" id="set-break" data-set="breakMin" value="${gapMin()}"></label><label class="f" for="set-step">Шаг подбора, мин<input class="inp" type="number" min="5" max="60" step="5" id="set-step" data-set="stepMin" value="${stepMin()}"></label></div></div>
+        <div class="blockt"><h3>Длительность занятий</h3><p class="small muted">Подставляется в новые занятия и в подбор свободного времени. У отдельного занятия длительность можно поменять при создании.</p>
+          <div class="durs">${Object.entries(TYPES).map(([k,v])=>{const n=durStale(k).length;return `<div class="hrow"><span class="chip t-${k}" style="flex:0 0 10.5em">${v.label}</span><input class="inp" type="number" min="10" max="240" step="5" data-dur="${k}" value="${durFor(k)}" aria-label="${v.label}, минут"><span class="small muted">мин</span>${n?`<button class="btn sm" data-act="dur-apply" data-type="${k}">Обновить ${n} ${plural(n,'будущее','будущих','будущих')}</button>`:''}</div>`}).join('')}</div></div>
         <div class="row"><button class="btn" data-act="test-push">${ic('bell')}Проверить напоминание</button>${CLOUD?'<button class="btn ghost" data-act="logout">Выйти</button>':''}${SERVER.on?'':'<button class="btn ghost danger" data-act="reset">Сбросить демо-данные</button>'}</div>
         ${tgBlock()}
       </div>
@@ -983,7 +991,7 @@ function newSessionSheet(pre={}){
       <label class="f" for="ns-kind">Вид<select class="inp" id="ns-kind" name="kind"><option value="">Обычное</option><option value="trial">Пробное</option><option value="makeup">Отработка пропуска</option></select></label></div>
     <div class="grid3"><label class="f" for="ns-date">День<input class="inp" type="date" id="ns-date" name="date" value="${pre.date||iso(now)}" required></label>
       <label class="f" for="ns-time">Начало<input class="inp" type="time" id="ns-time" name="start" value="${pre.time||'18:00'}" step="300" required></label>
-      <label class="f" for="ns-dur">Длительность<select class="inp" id="ns-dur" name="dur">${[30,45,60,90].map(m=>`<option value="${m}" ${m===DUR[type]?'selected':''}>${m} мин</option>`).join('')}</select></label></div>
+      <label class="f" for="ns-dur">Длительность, мин<input class="inp" type="number" id="ns-dur" name="dur" min="10" max="240" step="5" value="${durFor(type)}" required></label></div>
     <div id="ns-who">${whoField(type,pre.cid)}</div>
     <div class="grid2"><label class="f" for="ns-place">Место<input class="inp" id="ns-place" name="place" value="${PLACE[type]}"></label>
       <label class="f" for="ns-rep">Сколько тренировок<input class="inp" type="number" id="ns-rep" name="rep" min="1" max="60" value="${c&&clientStats(c.id).remaining>0?clientStats(c.id).remaining:8}"></label></div>
@@ -1289,7 +1297,7 @@ document.addEventListener('click',e=>{
     const list=planSlots(p.from,p.slots,p.n),type=clientType(c);
     let removed=0;if(document.getElementById('pl-replace')?.checked)planned(c.id).forEach(s=>{removed++;s.clientIds=s.clientIds.filter(x=>x!==c.id)});
     S.sessions=S.sessions.filter(s=>s.clientIds.length||s.groupId);
-    for(const x of list)S.sessions.push({id:uid('s'),date:x.date,start:x.time,dur:DUR[type],type,kind:null,groupId:null,clientIds:[c.id],place:PLACE[type],att:{},log:'',next:'',cancelled:false});
+    for(const x of list)S.sessions.push({id:uid('s'),date:x.date,start:x.time,dur:durFor(type),type,kind:null,groupId:null,clientIds:[c.id],place:PLACE[type],att:{},log:'',next:'',cancelled:false});
     c.plan={n:p.n,perWeek:p.perWeek,slots:p.slots};S.sessions.sort(byStart);persist();
     toast('Тренировки в расписании',`${esc(c.name.split(' ')[0])}: ${list.length} ${plural(list.length,'тренировка','тренировки','тренировок')}, ${slotsLabel(p.slots)}, последняя ${fdateS(list[list.length-1].date)}${removed?`. Убрано старых: ${removed}`:''}`);
     return clientSheet(c.id)}
@@ -1302,6 +1310,7 @@ document.addEventListener('click',e=>{
     if(used){toast('Тариф используется',`У ${used} ${plural(used,'клиента','клиентов','клиентов')} этот тариф. Сначала смените им тариф в карточке.`);return}
     if(!t.dataset.armed){t.dataset.armed='1';t.innerHTML='Удалить?';return}
     S.prices=S.prices.filter(x=>x.id!==tf.id);persist();render();toast('Тариф удалён',esc(tf.label));return}
+  if(a==='dur-apply'){const k=t.dataset.type,ss=durStale(k);ss.forEach(s=>s.dur=durFor(k));persist();render();toast('Занятия обновлены',`${TYPES[k].label}: ${ss.length} ${plural(ss.length,'занятие','занятия','занятий')} теперь по ${durFor(k)} мин`);return}
   if(a==='vacation')return vacationSheet();
   if(a==='vac-apply'){const from=document.getElementById('vac-from').value,to=document.getElementById('vac-to').value;
     if(!from||!to||from>to){toast('Проверьте даты','«С» должно быть не позже «по»');return}
@@ -1333,12 +1342,14 @@ document.addEventListener('change',e=>{
   const t=e.target;
   if(t.dataset.set){S.settings[t.dataset.set]=t.type==='checkbox'?t.checked:t.value;persist();if(t.dataset.set==='chargeNoShow')toast('Правило изменено',t.checked?'Пропуск без предупреждения списывает занятие':'Пропуски больше не списываются');return}
   if(t.dataset.price){toast('Цена сохранена',`${esc(tariff(t.dataset.price).label)}: ${t.value===''?'пакета нет':money(+t.value||0)}`);return}
-  if(t.id==='ns-type'){document.getElementById('ns-who').innerHTML=whoField(t.value);document.getElementById('ns-place').value=PLACE[t.value];document.getElementById('ns-dur').value=String(DUR[t.value])}
+  if(t.id==='ns-type'){document.getElementById('ns-who').innerHTML=whoField(t.value);document.getElementById('ns-place').value=PLACE[t.value];document.getElementById('ns-dur').value=String(durFor(t.value))}
   if(t.id==='vac-from'||t.id==='vac-to'){document.getElementById('vac-prev').innerHTML=vacPrevHTML(document.getElementById('vac-from').value,document.getElementById('vac-to').value);return}
   if(t.id==='ns-kind'&&t.value)document.getElementById('ns-rep').value='1';
   if(t.id==='ns-date'&&t.value){const i=wd(pdate(t.value));document.querySelectorAll('#f-session [name="wd"]').forEach(x=>{if(+x.value===i)x.checked=true})}
   if(t.name==='pl-wd'&&t.checked){const other=document.querySelector(`[name="pl-wd"]:checked:not([value="${t.value}"])`);if(other)document.getElementById('pl-t'+t.value).value=document.getElementById('pl-t'+other.value).value}
   if(t.closest?.('#pl-box')){planRefresh();if(t.id!=='pl-replace'&&!t.id.startsWith('pl-t')&&t.name!=='pl-wd')document.getElementById('pl-sets').innerHTML=''}
+  if(t.dataset.dur){const k=t.dataset.dur,v=Math.min(240,Math.max(10,Math.round(+t.value||DUR[k])));S.settings.dur={...(S.settings.dur||{}),[k]:v};persist();render();
+    const n=durStale(k).length;toast('Длительность сохранена',`${TYPES[k].label}: ${v} мин${n?`. У ${n} ${plural(n,'запланированного занятия','запланированных занятий','запланированных занятий')} пока старая — нажмите «Обновить»`:''}`);return}
   if(t.dataset.hours){const h=workHours();h[+t.dataset.hours][t.dataset.hf]=t.type==='checkbox'?t.checked:t.value;S.settings.hours=h;persist();return}
   if(t.id==='nc-kind')document.getElementById('nc-tariff').value=defTariff(t.value);
   if(t.id==='np-tariff')setPayTariff(tariff(t.value),curCid(),true);
@@ -1438,7 +1449,7 @@ function tgBlock(){
   const t=UI.tg;
   if(!t)return '<p class="small muted">Проверяю Telegram…</p>';
   // Cloud: one shared bot for every coach; the chat was linked when the coach signed up.
-  if(t.shared)return t.chatLinked?`<div class="blockt"><h3>Telegram @${esc(t.botName)} <span class="chip lv-ok">работает</span></h3><p class="small muted">Напоминания, сводка дня и кнопки посещения приходят в ваш чат с ботом круглосуточно, даже когда сервис закрыт. Клиентам бот ничего не пишет. Команды: /today, /next, /receipts.</p>
+  if(t.shared)return t.chatLinked?`<div class="blockt"><h3>Telegram @${esc(t.botName)} <span class="chip lv-ok">работает</span></h3><p class="small muted">Напоминания, сводка дня и кнопки посещения приходят в ваш чат с ботом круглосуточно, даже когда сервис закрыт. Клиентам бот ничего не пишет. Команды: /today, /next${t.receipts?', /receipts':''}.</p>
     <div class="row"><button class="btn" data-act="tg-test">Отправить тестовое сообщение</button><a class="btn ghost" href="https://t.me/${esc(t.botName)}" target="_blank" rel="noopener">Открыть @${esc(t.botName)}</a></div></div>`
     :`<div class="blockt"><h3>Telegram @${esc(t.botName)}</h3><p class="small muted">Откройте бота и нажмите «Start», чтобы напоминания приходили вам.</p><div class="row"><a class="btn primary" href="https://t.me/${esc(t.botName)}" target="_blank" rel="noopener">Открыть @${esc(t.botName)}</a><button class="btn ghost" data-act="tg-refresh">Проверить</button></div></div>`;
   if(!t.connected)return `<div class="blockt"><h3>Напоминания в Telegram</h3><p class="small muted">Откройте в Telegram @BotFather, отправьте /newbot и придумайте имя боту. Он пришлёт токен — вставьте его сюда. ${CLOUD?'Токен хранится в закрытой таблице сервиса, приложение его не показывает.':'Токен хранится только в базе на этом ноутбуке.'}</p>

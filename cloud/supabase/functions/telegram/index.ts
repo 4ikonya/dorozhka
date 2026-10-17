@@ -1,6 +1,6 @@
 // Telegram for «Дорожка» in the cloud. One function, four kinds of callers:
 //   POST /telegram/tick            — pg_cron every minute (x-cron-secret, checked by the database): sends due reminders
-//   POST /telegram/hook/<secret>   — webhook of the shared bot: sign-in and sign-up, attendance buttons, /today, /next, /receipts
+//   POST /telegram/hook/<secret>   — webhook of the shared bot: sign-in and sign-up, attendance buttons, /today, /next, /receipts (owner only)
 //   POST /telegram/login/start|poll — the login screen: sign in (or create a journal) by confirming in the bot
 //   POST /telegram/status|test     — the signed-in coach from the app
 // Every coach has their own account and data; the bot tells them apart by their Telegram chat.
@@ -22,7 +22,7 @@ const json = (data: unknown, status = 200) =>
 
 // The shared bot (public.bot) and a coach's link to it: their account and their chat with the bot.
 type Bot = { token: string; bot_name: string; hook_secret: string };
-type Coach = { owner: string; chat_id: number | null };
+type Coach = { owner: string; chat_id: number | null; receipts_report?: boolean };
 
 let botCache: Bot | null = null;
 async function getBot(): Promise<Bot> {
@@ -32,7 +32,7 @@ async function getBot(): Promise<Bot> {
   return (botCache = data as Bot);
 }
 const coachByChat = async (chatId: number) =>
-  ((await admin.from('telegram_links').select('owner, chat_id').eq('chat_id', chatId).maybeSingle()).data as Coach | null);
+  ((await admin.from('telegram_links').select('owner, chat_id, receipts_report').eq('chat_id', chatId).maybeSingle()).data as Coach | null);
 
 async function tg(token: string, method: string, body: Record<string, unknown> = {}) {
   const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
@@ -70,18 +70,18 @@ async function stateOf(owner: string) {
   return data?.data ?? null;
 }
 const nowFor = (S: any) => wallNow(new Date(), S?.settings?.tz || DEFAULT_TZ);
-const status = (l: Coach | null, bot: Bot) => ({ connected: true, shared: true, chatLinked: !!l?.chat_id, botName: bot.bot_name });
+const status = (l: Coach | null, bot: Bot) => ({ connected: true, shared: true, chatLinked: !!l?.chat_id, botName: bot.bot_name, receipts: !!l?.receipts_report });
 
 async function tick() {
   const bot = await getBot();
-  const { data: links } = await admin.from('telegram_links').select('owner, chat_id').not('chat_id', 'is', null);
+  const { data: links } = await admin.from('telegram_links').select('owner, chat_id, receipts_report').not('chat_id', 'is', null);
   let sent = 0;
   for (const l of (links ?? []) as Coach[]) {
     const S = await stateOf(l.owner);
     if (!S) continue;
     const { data: rows } = await admin.from('sent_reminders').select('key').eq('owner', l.owner);
     const done = new Set((rows ?? []).map((r) => r.key));
-    for (const m of dueMessages(S, nowFor(S), (k: string) => done.has(k))) {
+    for (const m of dueMessages(S, nowFor(S), (k: string) => done.has(k), { receipts: !!l.receipts_report })) {
       // Claim the key first so two overlapping ticks never send the same message.
       const { error } = await admin.from('sent_reminders').insert({ owner: l.owner, key: m.key });
       if (error) continue;
@@ -232,11 +232,11 @@ async function webhook(secret: string, update: any) {
   }
   if (!coach) return tg(bot.token, 'sendMessage', { chat_id: chat.id, text: WELCOME });
   const S = await stateOf(coach.owner);
-  if (m.text.startsWith('/start')) await tg(bot.token, 'sendMessage', { chat_id: chat.id, text: startText(S) });
+  if (m.text.startsWith('/start')) await tg(bot.token, 'sendMessage', { chat_id: chat.id, text: startText(S, { receipts: !!coach.receipts_report }) });
   else if (!S) return;
   else if (m.text.startsWith('/today')) await tg(bot.token, 'sendMessage', { chat_id: chat.id, text: dayText(S, nowFor(S)) });
   else if (m.text.startsWith('/next')) await tg(bot.token, 'sendMessage', { chat_id: chat.id, text: nextText(S, nowFor(S)) });
-  else if (m.text.startsWith('/receipts')) { const { from, to } = receiptsSoFar(nowFor(S)); await sendReport(bot.token, chat.id, receiptsReport(S, from, to)); }
+  else if (m.text.startsWith('/receipts') && coach.receipts_report) { const { from, to } = receiptsSoFar(nowFor(S)); await sendReport(bot.token, chat.id, receiptsReport(S, from, to)); }
 }
 
 Deno.serve(async (req) => {
@@ -264,7 +264,7 @@ Deno.serve(async (req) => {
     const { data: auth } = await admin.auth.getUser(jwt);
     const user = auth?.user;
     if (!user) return json({ error: 'Войдите в сервис' }, 401);
-    const { data: cur } = await admin.from('telegram_links').select('owner, chat_id').eq('owner', user.id).maybeSingle();
+    const { data: cur } = await admin.from('telegram_links').select('owner, chat_id, receipts_report').eq('owner', user.id).maybeSingle();
     const link = cur as Coach | null;
     const bot = await getBot();
 
