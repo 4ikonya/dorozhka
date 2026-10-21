@@ -1417,7 +1417,8 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&UI.openSheet)closeS
 
 /* ---------- local server (server/server.mjs): data in SQLite, Telegram reminders ---------- */
 async function api(method,url,body){
-  const r=await fetch(url,{method,headers:body?{'content-type':'application/json'}:{},body:body?JSON.stringify(body):undefined,cache:'no-store'});
+  // Every write is JSON, even without a body: the server refuses other content types (CSRF protection).
+  const r=await fetch(url,{method,headers:method==='GET'?{}:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined,cache:'no-store'});
   if(!(r.headers.get('content-type')||'').includes('json')){const e=new Error('Сервер не отвечает');e.status=r.status;throw e}
   const j=await r.json();if(!r.ok){const e=new Error(j.error||('Ошибка '+r.status));e.status=r.status;e.body=j;throw e}return j}
 /* Cloud build (cloud/build.mjs) sets window.DOROZHKA_CLOUD: data in Supabase, login by email link. */
