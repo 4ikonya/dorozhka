@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "start": "node server/server.mjs",
-    "build:cloud": "node cloud/build.mjs"
+    "build:cloud": "node cloud/build.mjs",
+    "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {
     "supabase": "^2.121.0",

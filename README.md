@@ -269,6 +269,7 @@ python3 -m http.server 8000
 
 ```bash
 npm install                  # Supabase CLI и Vercel CLI
+npm test                     # тесты (node:test, без зависимостей)
 node cloud/build.mjs         # собирает сайт в cloud/web и копирует shared/ в функцию
 npx supabase functions deploy telegram --no-verify-jwt --workdir cloud
 npx vercel deploy --prod --yes --cwd cloud/web
@@ -300,6 +301,7 @@ node server/server.mjs       # порт 4318
 .
 ├── dorozhka.html                    # всё приложение: интерфейс, логика, стили
 ├── shared/schedule.mjs              # напоминания и кнопки посещаемости, общие для облака и ноутбука
+├── test/                            # npm test: логика напоминаний и синтаксис страницы
 ├── server/
 │   ├── server.mjs                   # локальный режим: SQLite + Telegram
 │   └── export-state.mjs             # выгрузка данных с ноутбука в JSON
