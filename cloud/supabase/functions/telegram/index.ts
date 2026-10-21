@@ -56,14 +56,19 @@ async function sendReport(token: string, chatId: number, m: { text: string; phot
   }
   return sent;
 }
-// Drops photos that are now in the chat. Version-checked like every other write, retried if the app saved meanwhile.
+// Every write goes through save_state_for, like the app's save_state: version check, shape and size check, daily backup.
+// Returns false when someone saved meanwhile (the caller reads again).
+async function saveState(owner: string, version: number, data: unknown) {
+  const { data: r, error } = await admin.rpc('save_state_for', { p_owner: owner, expected: version, new_data: data });
+  if (error) throw new Error(error.message);
+  return !r?.[0]?.is_conflict;
+}
+// Drops photos that are now in the chat. Retried if the app saved meanwhile.
 async function dropSentPhotos(owner: string, ids: string[], day: string) {
   for (let i = 0; i < 5 && ids.length; i++) {
     const { data: row } = await admin.from('app_state').select('data, version').eq('owner', owner).maybeSingle();
     if (!row?.data || !forgetPhotos(row.data, ids, day)) return;
-    const { data: saved } = await admin.from('app_state').update({ data: row.data, version: row.version + 1, updated_at: new Date().toISOString() })
-      .eq('owner', owner).eq('version', row.version).select('version');
-    if (saved?.length) return;
+    if (await saveState(owner, row.version, row.data)) return;
   }
   console.error('telegram receipts: photos sent but not removed (state kept changing)');
 }
@@ -267,9 +272,7 @@ async function webhook(secret: string, update: any) {
     const S = row?.data;
     const s = S && applyAttendance(S, q.data);
     if (!s) { await tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id, text: 'Это занятие уже удалено' }); return; }
-    const { data: saved } = await admin.from('app_state').update({ data: S, version: row.version + 1, updated_at: new Date().toISOString() })
-      .eq('owner', coach.owner).eq('version', row.version).select('version');
-    if (!saved?.length) { await tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id, text: 'Данные только что изменились, нажмите ещё раз' }); return; }
+    if (!(await saveState(coach.owner, row.version, S))) { await tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id, text: 'Данные только что изменились, нажмите ещё раз' }); return; }
     const view = attendanceView(S, s);
     await tg(bot.token, 'editMessageText', { chat_id: chat.id, message_id: q.message.message_id, text: view.text, reply_markup: view.reply_markup }).catch(() => {});
     await tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id, text: 'Сохранено' });

@@ -1442,6 +1442,7 @@ async function pushState(){clearTimeout(SERVER.timer);SERVER.timer=null;
   try{const j=await BE.save(SERVER.version,S);SERVER.version=j.version;SERVER.dirty=false;
     if(SERVER.offline){SERVER.offline=false;toast('Связь с сервером есть','Изменения сохранены')}}
   catch(e){if(e.status===409&&e.body?.state){S=e.body.state;SERVER.version=e.body.version;SERVER.dirty=false;render();toast('Данные обновились','Их изменили в другой вкладке, показываю свежую версию')}
+    else if(/too large/.test(e.message)){toast('Не удалось сохранить','Журнал стал слишком большим для облака. Удалите лишние фото чеков и попробуйте снова.',{sticky:true})}
     else{if(!SERVER.offline){SERVER.offline=true;toast('Нет связи с сервером','Изменения сохранятся, когда он снова заработает')}SERVER.timer=setTimeout(pushState,5000)}}}
 async function tgRefresh(){if(!SERVER.on)return;try{UI.tg=await BE.tg('status')}catch(e){UI.tg=null}
   if(UI.view==='plan'&&!UI.openSheet&&!document.getElementById('tg-token')?.value)render();
