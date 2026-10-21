@@ -343,6 +343,7 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
 <section class="sheet" id="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="sheet-title"></section>
 <div class="toasts" id="toasts" aria-live="polite"></div>
 
+<script src="shared/logic.js"></script>
 <script>
 /* ---------- constants ---------- */
 const TYPES={baby:{label:'Грудничковое'},individual:{label:'Индивидуальное'},split:{label:'Сплит'},minigroup:{label:'Мини-группа'},group:{label:'Групповое'}};
@@ -400,6 +401,8 @@ const ICON={
 const ic=n=>`<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICON[n]}</svg>`;
 
 /* ---------- utils ---------- */
+// Business rules shared with the bot and the laptop server (shared/logic.js): the one copy of them.
+const L=window.DorozhkaLogic;
 const pad=n=>String(n).padStart(2,'0');
 const iso=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 const pdate=s=>{const [y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d)};
@@ -537,39 +540,27 @@ const pkgs=t=>[t.one?[1,'Разовое']:null,t.p8?[8,'8 занятий']:null,
 const tariffOptions=sel=>Object.entries(TYPES).map(([k,v])=>{const ts=S.prices.filter(t=>t.type===k);return ts.length?`<optgroup label="${v.label}">${ts.map(t=>`<option value="${t.id}" ${t.id===sel?'selected':''}>${esc(t.label)}</option>`).join('')}</optgroup>`:''}).join('');
 const trialOnly=cs=>cs.upcoming.length>0&&cs.upcoming.every(s=>s.kind==='trial');
 const bTitle=s=>(s.kind?SKIND[s.kind]+' · ':'')+sTitle(s);
-// A trial session is paid separately or free, never taken from a package.
-function charged(s,cid){if(s.kind==='trial')return false;const a=s.att?.[cid];return a==='present'||(a==='absent'&&S.settings.chargeNoShow)}
-// c.pause is the current or next pause; finished parts move to c.pauses so old sessions stay paused.
-const pausesOf=c=>[...(c?.pauses||[]),...(c?.pause?[c.pause]:[])];
-const pauseAt=(c,date)=>pausesOf(c).find(p=>p.from<=date&&date<=p.to);
-const isPausedC=(c,date)=>!!pauseAt(c,date);
+// Rules from shared/logic.js: what is charged (a trial never is), pauses (finished parts move to c.pauses).
+const charged=(s,cid)=>L.charged(S,s,cid);
+const {pausesOf,pauseAt}=L,isPausedC=L.isPaused;
 function archivePause(c){const y=iso(addDays(new Date(),-1));
   if(c.pause&&c.pause.from<=y)c.pauses=(c.pauses||[]).concat({from:c.pause.from,to:c.pause.to<y?c.pause.to:y});delete c.pause}
 const activeIds=s=>s.clientIds.filter(id=>s.att?.[id]||!isPausedC(client(id),s.date));
 function sStatus(s){const now=new Date();if(s.cancelled)return 'cancelled';if(!activeIds(s).length)return 'paused';if(startDT(s)<=now&&endDT(s)>=now)return 'live';
   if(endDT(s)<now)return activeIds(s).every(c=>s.att[c])?'done':'unmarked';return 'planned'}
-/* Charged sessions are taken from the oldest payment first; a payment with a term only covers sessions up to its end date, and what is left after it ends is burned. */
+/* The package balance (oldest payment first, terms of old payments) is L.balance; here the visits and upcoming sessions. */
 function clientStats(cid){
-  const now=new Date(),today=iso(now);let present=0,absent=0,excused=0;const upcoming=[],usedS=[];
+  const now=new Date(),today=iso(now);let present=0,absent=0,excused=0;const upcoming=[];
   const me=client(cid);
   for(const s of S.sessions){if(s.cancelled||!s.clientIds.includes(cid))continue;const a=s.att?.[cid];if(!a&&isPausedC(me,s.date))continue;
-    if(a){a==='present'?present++:a==='absent'?absent++:excused++;if(charged(s,cid))usedS.push(s)}
+    if(a){a==='present'?present++:a==='absent'?absent++:excused++}
     else if(startDT(s)>now)upcoming.push(s)}
-  upcoming.sort(byStart);usedS.sort(byStart);
-  const pays=S.payments.filter(p=>p.clientId===cid||p.with===cid).sort((a,b)=>a.date.localeCompare(b.date)).map(p=>({p,left:p.sessions}));
-  let debt=0;
-  for(const s of usedS){const b=pays.find(x=>x.left>0&&(!x.p.until||s.date<=x.p.until));if(b)b.left--;else debt++}
-  const active=pays.filter(x=>!x.p.until||x.p.until>=today);
-  const burned=pays.filter(x=>x.p.until&&x.p.until<today).reduce((t,x)=>t+x.left,0);
-  const paid=pays.reduce((t,x)=>t+x.p.sessions,0);
-  const aPaid=active.reduce((t,x)=>t+x.p.sessions,0);
-  const remaining=active.reduce((t,x)=>t+x.left,0)-debt;
-  const aUsed=aPaid-Math.max(0,remaining);
-  const until=active.filter(x=>x.left>0&&x.p.until).map(x=>x.p.until).sort()[0]||null;
+  upcoming.sort(byStart);
+  const {paid,aPaid,aUsed,used,remaining,burned,until}=L.balance(S,cid,today);
   const paidUp=upcoming.filter(s=>s.kind!=='trial'),lastCovered=remaining>0&&paidUp.length?paidUp[Math.min(remaining,paidUp.length)-1]:null;
   const firstUnpaid=remaining>=0?paidUp[remaining]:paidUp[0];
   const lv=remaining<=0?'bad':remaining<=2?'warn':'ok';
-  return {paid,aPaid,aUsed,debt:Math.max(0,-remaining),used:usedS.length,present,absent,excused,remaining,burned,until,upcoming,lastCovered,firstUnpaid,lv};
+  return {paid,aPaid,aUsed,debt:Math.max(0,-remaining),used,present,absent,excused,remaining,burned,until,upcoming,lastCovered,firstUnpaid,lv};
 }
 function remLabel(cs){return cs.remaining<0?`долг ${-cs.remaining} ${plural(-cs.remaining,'занятие','занятия','занятий')}`:cs.remaining===0?'абонемент закончился':`осталось ${cs.remaining} из ${cs.aPaid}${cs.until?`, до ${fdateS(cs.until)}`:''}`}
 // Dates for exactly n sessions on the chosen weekdays (0 = Monday) from `from` on, skipping the coach's days off. The series stops at n and is never extended.
@@ -615,21 +606,8 @@ function suggestSets(c,p,ignore){const dur=durFor(clientType(c)),days=workHours(
     const times=common.length?cb.map(()=>near(common)):free.map(near);
     sets.push({slots:Object.fromEntries(cb.map((d,i)=>[d,fromMin(times[i])])),same:common.length?1:0,spread:spread>1?1:0,dist:times.reduce((a,x)=>a+Math.abs(x-pref),0)/k})}
   return sets.sort((a,b)=>b.same-a.same||b.spread-a.spread||a.dist-b.dist).slice(0,5)}
-/* Everyone at a session warned they would miss it: nothing is charged, so the series gets one more session at its end —
-   a make-up on the client's next plan day that is free. Undoing the mark removes it while it is still unmarked.
-   Group sessions are left alone: the group keeps its own schedule. The same rule is in shared/schedule.mjs (syncMakeup) for the bot. */
-function syncMakeup(s){if(s.groupId||s.kind==='trial'||s.cancelled)return null;
-  const ids=s.clientIds.filter(id=>s.att?.[id]||!isPausedC(client(id),s.date)),want=ids.length>0&&ids.every(id=>s.att[id]==='excused'),ext=S.sessions.find(x=>x.extOf===s.id);
-  if(!want){if(ext&&!Object.keys(ext.att||{}).length)S.sessions=S.sessions.filter(x=>x!==ext);return null}
-  if(ext)return ext;
-  const key=[...s.clientIds].sort().join(','),last=S.sessions.filter(x=>!x.groupId&&!x.cancelled&&[...x.clientIds].sort().join(',')===key).reduce((a,x)=>x.date>a?x.date:a,s.date);
-  const pl=client(s.clientIds[0])?.plan,slots=pl?.slots&&Object.keys(pl.slots).length?pl.slots:pl?.days?Object.fromEntries(pl.days.map(d=>[d,pl.time])):{[wd(pdate(s.date))]:s.start};
-  const g=gapMin(),busy=(date,start)=>{const a=toMin(start),b=a+s.dur;return S.sessions.some(x=>x.date===date&&!x.cancelled&&a<toMin(x.start)+x.dur+g&&b>toMin(x.start)-g)};
-  let pick=null,first=null;for(let i=1;i<=120&&!pick;i++){const d=addDays(pdate(last),i),day=iso(d),start=slots[wd(d)];
-    if(!start||(S.vacations||[]).some(v=>v.from<=day&&day<=v.to))continue;first=first||{day,start};if(!busy(day,start))pick={day,start}}
-  pick=pick||first;if(!pick)return null;
-  const add={id:uid('s'),date:pick.day,start:pick.start,dur:s.dur,type:s.type,kind:'makeup',groupId:null,clientIds:[...s.clientIds],place:s.place||'',att:{},log:'',next:'',cancelled:false,extOf:s.id};
-  S.sessions.push(add);S.sessions.sort(byStart);return add}
+// Everyone warned they would miss it: one make-up at the end of the series (L.syncMakeup, the rule is described there).
+const syncMakeup=s=>L.syncMakeup(S,s);
 function planConflicts(c,p,ignore){const dur=durFor(clientType(c));return planSlots(p.from,p.slots,p.n).map(x=>({...x,s:clash(x.date,x.time,dur,ignore)})).filter(x=>x.s)}
 function planWarn(c,p){const cf=planConflicts(c,p,planIgnore(c.id));if(!cf.length)return '';
   return `Занято: ${cf.slice(0,3).map(x=>`${DAY[wd(pdate(x.date))]} ${fdateS(x.date)} ${x.time} — ${esc(shortTitle(x.s))}`).join('; ')}${cf.length>3?` и ещё ${cf.length-3}`:''}. Поставить всё равно можно.`}
@@ -657,11 +635,8 @@ function readPlan(){const g=id=>document.getElementById(id),slots={};document.qu
   return {n:Math.min(60,Math.max(0,Math.floor(+g('pl-n').value||0))),perWeek:Math.min(6,Math.max(1,Math.floor(+g('pl-week').value||1))),from:g('pl-from').value,slots}}
 function planRefresh(){const el=document.getElementById('pl-box');if(!el)return;const c=client(el.dataset.cid),p=readPlan();
   document.getElementById('pl-info').textContent=planInfo(p);document.getElementById('pl-warn').innerHTML=planWarn(c,p)}
-function prevNote(s){
-  const t=startDT(s);
-  const same=x=>s.groupId?x.groupId===s.groupId:(!x.groupId&&x.clientIds[0]===s.clientIds[0]);
-  return S.sessions.filter(x=>x.id!==s.id&&same(x)&&startDT(x)<t&&x.next).sort(byStart).pop()||null;
-}
+// The previous session of the same client or group with a note for the next time.
+const prevNote=s=>L.prevSession(S,s);
 
 /* ---------- shell ---------- */
 function renderNav(){

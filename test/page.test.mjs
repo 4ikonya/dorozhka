@@ -10,3 +10,9 @@ test('dorozhka.html: скрипт без синтаксических ошибо
   assert.ok(scripts.length > 0);
   for (const code of scripts) assert.doesNotThrow(() => new Function(code));
 });
+
+test('dorozhka.html: общая логика подключена до скрипта приложения', () => {
+  const tag = html.indexOf('<script src="shared/logic.js"></script>');
+  assert.ok(tag >= 0);
+  assert.ok(tag < html.indexOf('<script>'));
+});

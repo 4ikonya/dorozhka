@@ -21,9 +21,13 @@ const cloud = { url: cfg.supabaseUrl || 'https://PROJECT_REF.supabase.co', anonK
 
 fs.mkdirSync(web, { recursive: true });
 fs.mkdirSync(path.join(here, 'supabase', 'functions', '_shared'), { recursive: true });
-fs.copyFileSync(path.join(root, 'shared', 'schedule.mjs'), path.join(here, 'supabase', 'functions', '_shared', 'schedule.mjs'));
+for (const f of ['logic.js', 'schedule.mjs']) fs.copyFileSync(path.join(root, 'shared', f), path.join(here, 'supabase', 'functions', '_shared', f));
 
-const body = fs.readFileSync(path.join(root, 'dorozhka.html'), 'utf8');
+// The shared business logic goes into the page itself: /app and /demo are single files.
+const logic = fs.readFileSync(path.join(root, 'shared', 'logic.js'), 'utf8');
+const body = fs.readFileSync(path.join(root, 'dorozhka.html'), 'utf8')
+  .replace('<script src="shared/logic.js"></script>', () => `<script>${logic}</script>`);
+if (!body.includes('globalThis.DorozhkaLogic')) throw new Error('dorozhka.html: не найден <script src="shared/logic.js">');
 const head = [
   '<meta charset="utf-8">',
   '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">',

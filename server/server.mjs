@@ -182,7 +182,9 @@ setInterval(checkTokenFile, 3000);
 
 /* ---------- http ---------- */
 function page() {
-  const body = fs.readFileSync(path.join(root, 'dorozhka.html'), 'utf8');
+  // The shared business logic is put into the page, as in the cloud build.
+  const logic = fs.readFileSync(path.join(root, 'shared', 'logic.js'), 'utf8');
+  const body = fs.readFileSync(path.join(root, 'dorozhka.html'), 'utf8').replace('<script src="shared/logic.js"></script>', () => `<script>${logic}</script>`);
   return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style></head><body>${body}</body></html>`;
 }
 function readBody(req, limit = 30 * 1024 * 1024) {

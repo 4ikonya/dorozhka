@@ -2,7 +2,7 @@
 // Times are wall-clock values in the coach's zone, kept in the UTC fields of a Date (as wallNow returns them).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyAttendance, deviceOf, dueMessages, loginPlace, receiptsPeriod, receiptsSoFar, remaining, syncMakeup, textChunks } from '../shared/schedule.mjs';
+import { applyAttendance, balance, charged, deviceOf, dueMessages, loginPlace, receiptsPeriod, receiptsSoFar, remaining, syncMakeup, textChunks } from '../shared/schedule.mjs';
 
 const at = (iso) => new Date(`${iso}Z`);
 let n = 0;
@@ -38,6 +38,32 @@ test('remaining: «не предупредил» не списывается, е
   assert.equal(remaining(S, 'c1'), 1);
   S.settings.chargeNoShow = false;
   assert.equal(remaining(S, 'c1'), 2);
+});
+test('charged: без настройки chargeNoShow «не предупредил» списывается', () => {
+  const S = state({ settings: {} });
+  assert.equal(charged(S, sess({ att: { c1: 'absent' } }), 'c1'), true);
+  assert.equal(charged(S, sess({ att: { c1: 'excused' } }), 'c1'), false);
+  assert.equal(charged(S, sess({ att: { c1: 'present' }, kind: 'trial' }), 'c1'), false);
+  S.settings.chargeNoShow = false;
+  assert.equal(charged(S, sess({ att: { c1: 'absent' } }), 'c1'), false);
+});
+test('balance: срок старой оплаты — занятия после даты не списываются с неё, остаток сгорает', () => {
+  const S = state({
+    payments: [pay({ date: '2026-09-01', sessions: 4, until: '2026-09-30' }), pay({ date: '2026-10-01', sessions: 8 })],
+    sessions: [sess({ date: '2026-09-10', att: { c1: 'present' } }), sess({ date: '2026-10-05', att: { c1: 'present' } })],
+  });
+  // September: 1 of 4 used, 3 burned after the 30th. October's session comes from the new payment.
+  const b = balance(S, 'c1', '2026-10-19');
+  assert.equal(b.remaining, 7);
+  assert.equal(b.burned, 3);
+  assert.equal(b.paid, 12);
+  assert.equal(b.aPaid, 8);
+  assert.equal(b.until, null);
+  // Before the end date the old payment still counts, and its date is shown.
+  const early = balance(S, 'c1', '2026-09-20');
+  assert.equal(early.remaining, 10);
+  assert.equal(early.until, '2026-09-30');
+  assert.equal(remaining(S, 'c1', '2026-10-19'), 7);
 });
 test('remaining: долг уходит в минус', () => {
   const S = state({ sessions: [sess({ att: { c1: 'present' } })] });
