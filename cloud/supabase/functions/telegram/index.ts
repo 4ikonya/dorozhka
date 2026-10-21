@@ -103,18 +103,22 @@ async function tick() {
 
 /* ---------- login through the bot ---------- */
 const LOGIN_TTL_MIN = 10;
+const CODE_TRIES = 5;
 const fresh = () => new Date(Date.now() - LOGIN_TTL_MIN * 60_000).toISOString();
 
-// Limits are per caller address, so a stranger requesting codes can't lock the coach out.
-const callerIp = (req: Request) => (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || req.headers.get('x-real-ip') || 'unknown';
+// Limits are per caller address, so a stranger requesting codes can't lock the coach out (there is no shared limit
+// any longer: one source could close the login for everybody). Supabase does not document a trusted client-IP header.
+// The platform sits behind Cloudflare, which overwrites cf-connecting-ip with the real address; x-forwarded-for keeps
+// whatever the caller sent in front, and the proxy appends the real address last, so never trust its first entry.
+const callerIp = (req: Request) =>
+  req.headers.get('cf-connecting-ip')?.trim() || (req.headers.get('x-forwarded-for') ?? '').split(',').pop()!.trim() || 'unknown';
 
 async function loginStart(req: Request) {
   const bot = await getBot();
   await admin.from('login_requests').delete().lt('created_at', new Date(Date.now() - 864e5).toISOString());
   const ip = callerIp(req);
   const { count: mine } = await admin.from('login_requests').select('nonce', { count: 'exact', head: true }).eq('ip', ip).gt('created_at', fresh());
-  const { count: all } = await admin.from('login_requests').select('nonce', { count: 'exact', head: true }).gt('created_at', fresh());
-  if ((mine ?? 0) >= 6 || (all ?? 0) >= 300) return json({ error: 'Слишком много попыток входа. Подождите 10 минут.' }, 429);
+  if ((mine ?? 0) >= 6) return json({ error: 'Слишком много попыток входа. Подождите 10 минут.' }, 429);
   const nonce = crypto.randomUUID().replaceAll('-', '');
   const code = String(100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000));
   const { error } = await admin.from('login_requests').insert({ nonce, code, ip });
@@ -225,8 +229,15 @@ async function webhook(secret: string, update: any) {
   // The code from the login screen, typed here (when the link cannot open Telegram): asks the same question.
   const typed = m.text.replace(/\s/g, '');
   if (/^\d{6}$/.test(typed)) {
+    // At most CODE_TRIES wrong codes per chat in 10 minutes, so a code can't be guessed by trying them all.
+    const { count: wrong } = await admin.from('login_code_failures').select('chat_id', { count: 'exact', head: true }).eq('chat_id', chat.id).gt('at', fresh());
+    if ((wrong ?? 0) >= CODE_TRIES) return tg(bot.token, 'sendMessage', { chat_id: chat.id, text: 'Слишком много неверных кодов. Подождите 10 минут и нажмите «Новый код» на сайте.' });
     const { data: r } = await admin.from('login_requests').select('nonce').eq('code', typed).is('approved_at', null)
       .gt('created_at', fresh()).order('created_at', { ascending: false }).limit(1).maybeSingle();
+    if (!r) {
+      await admin.from('login_code_failures').delete().lt('at', new Date(Date.now() - 864e5).toISOString());
+      await admin.from('login_code_failures').insert({ chat_id: chat.id });
+    }
     if (!r) return tg(bot.token, 'sendMessage', { chat_id: chat.id, text: 'Такого кода нет или он устарел. Нажмите «Новый код» на сайте и отправьте его сюда.' });
     return loginAsk(bot, chat.id, r.nonce, coach);
   }
