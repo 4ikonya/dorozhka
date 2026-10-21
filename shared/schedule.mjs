@@ -239,6 +239,10 @@ export function forgetPhotos(S, ids, day) {
   return n;
 }
 
+// A session's keys carry its date and time, so a session moved after its reminder gets one for the new time.
+// The keys without them (sent before this change) still count as sent, so nothing is sent twice after the update;
+// they are cleaned up with the other old keys after a few days.
+const whenKey = (s) => `${s.date}T${s.start}`;
 /** Messages that are due now and not yet sent, each with the key that marks it as sent. */
 export function dueMessages(S, wnow, wasSent, opts = {}) {
   const out = [];
@@ -250,8 +254,8 @@ export function dueMessages(S, wnow, wasSent, opts = {}) {
     const ended = S.sessions.filter((s) => !s.cancelled && activeClients(S, s).length
       && wnow - endOf(s) >= 10 * 60000 && wnow - endOf(s) < 24 * 3600000);
     for (const s of ended) {
-      const k = `att:${s.id}`;
-      if (!wasSent(k) && activeClients(S, s).some((id) => !s.att?.[id])) out.push({ key: k, ...attendanceView(S, s) });
+      const k = `att:${s.id}:${whenKey(s)}`;
+      if (!wasSent(k) && !wasSent(`att:${s.id}`) && activeClients(S, s).some((id) => !s.att?.[id])) out.push({ key: k, ...attendanceView(S, s) });
     }
     const open = ended.filter((s) => activeClients(S, s).some((id) => !s.att?.[id]));
     if (hm(wnow) >= '21:00' && open.length && !wasSent(`attnudge:${today}`)) {
@@ -267,8 +271,8 @@ export function dueMessages(S, wnow, wasSent, opts = {}) {
   if (onVacation(S, today)) return out;
   for (const s of S.sessions) {
     if (s.cancelled || onVacation(S, s.date) || !activeClients(S, s).length) continue;
-    const st = startOf(s), key = `${s.id}:${leadKey}`;
-    if (wnow >= st - lead && wnow < st && !wasSent(key)) out.push({ key, text: reminderText(S, s, wnow) });
+    const st = startOf(s), key = `${s.id}:${whenKey(s)}:${leadKey}`;
+    if (wnow >= st - lead && wnow < st && !wasSent(key) && !wasSent(`${s.id}:${leadKey}`)) out.push({ key, text: reminderText(S, s, wnow) });
   }
   const dk = `digest:${dayKey(wnow)}`;
   if (S.settings?.morningDigest !== false && hm(wnow) >= '07:00' && hm(wnow) < '12:00' && !wasSent(dk)) out.push({ key: dk, text: `Сводка дня\n${dayText(S, wnow)}` });

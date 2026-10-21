@@ -141,6 +141,27 @@ test('dueMessages: напоминание за выбранное время д�
   const sent = new Set(keys(out));
   assert.deepEqual(dueMessages(S, at('2026-10-19T09:30'), (k) => sent.has(k)).filter((m) => !m.key.startsWith('digest')), []);
 });
+test('dueMessages: перенесённое занятие получает новое напоминание и новые кнопки', () => {
+  const s = sess({ date: '2026-10-19', start: '10:00' });
+  const S = state({ sessions: [s] });
+  const sent = new Set(keys(dueMessages(S, at('2026-10-19T08:30'), never)));
+  s.start = '12:00';
+  const out = dueMessages(S, at('2026-10-19T10:30'), (k) => sent.has(k));
+  assert.equal(out.filter((m) => m.text.startsWith('Через')).length, 1);
+  assert.match(out.find((m) => m.text.startsWith('Через')).text, /12:00/);
+  // Moved after the end, the attendance buttons come again for the new time.
+  s.start = '10:00';
+  dueMessages(S, at('2026-10-19T11:00'), never).forEach((m) => sent.add(m.key));
+  s.date = '2026-10-20';
+  assert.ok(dueMessages(S, at('2026-10-20T11:00'), (k) => sent.has(k)).some((m) => m.reply_markup));
+});
+test('dueMessages: ключи старого формата (без времени) считаются отправленными', () => {
+  const s = sess({ date: '2026-10-19', start: '10:00' });
+  const S = state({ sessions: [s] });
+  const old = new Set([`${s.id}:2h`, `att:${s.id}`, 'digest:2026-10-19']);
+  assert.deepEqual(dueMessages(S, at('2026-10-19T09:00'), (k) => old.has(k)), []);
+  assert.deepEqual(dueMessages(S, at('2026-10-19T11:00'), (k) => old.has(k)), []);
+});
 test('dueMessages: нет напоминаний об отменённых занятиях и занятиях на паузе', () => {
   const S = state({ sessions: [sess({ cancelled: true }), sess({ clientIds: ['c2'] })] });
   S.clients[1].pause = { from: '2026-10-19', to: '2026-10-19' };

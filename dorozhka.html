@@ -1202,8 +1202,9 @@ function remindSession(s,now){const st=startDT(s),pn=prevNote(s);
   notify(`${rel(st-now)[0].toUpperCase()+rel(st-now).slice(1)}: ${s.start} · ${esc(shortTitle(s))}`,`${TYPES[s.type].label}, ${esc(s.place)}${pn?`. С прошлого раза: ${esc(pn.next)}`:''}`,s.id)}
 function checkReminders(){
   const now=new Date(),lead=(LEAD[S.settings.remindCoach]||120)*60000,due=[];
-  for(const s of S.sessions){if(s.cancelled||!activeIds(s).length)continue;const st=startDT(s),k=s.id+':'+S.settings.remindCoach;
-    if(now>=st-lead&&now<st&&!notified[k]){markNotified(k);due.push(s)}}
+  for(const s of S.sessions){if(s.cancelled||!activeIds(s).length)continue;const st=startDT(s),k=`${s.id}:${s.date}T${s.start}:${S.settings.remindCoach}`;
+    // The key carries the time, so a moved session is reminded again (keys without it were saved before this rule).
+    if(now>=st-lead&&now<st&&!notified[k]&&!notified[s.id+':'+S.settings.remindCoach]){markNotified(k);due.push(s)}}
   due.sort(byStart);
   if(due.length>2)notify(`Скоро ${due.length} ${plural(due.length,'занятие','занятия','занятий')}`,due.map(s=>`${s.start} ${esc(shortTitle(s))}`).join(', '));
   else due.forEach(s=>remindSession(s,now));
