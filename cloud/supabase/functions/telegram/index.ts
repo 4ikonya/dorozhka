@@ -22,7 +22,7 @@ const json = (data: unknown, status = 200) =>
 
 // The shared bot (public.bot) and a coach's link to it: their account and their chat with the bot.
 type Bot = { token: string; bot_name: string; hook_secret: string };
-type Coach = { owner: string; chat_id: number | null; receipts_report?: boolean };
+type Coach = { owner: string; chat_id: number | null; receipts_report?: boolean; blocked_at?: string | null };
 
 let botCache: Bot | null = null;
 async function getBot(): Promise<Bot> {
@@ -32,16 +32,18 @@ async function getBot(): Promise<Bot> {
   return (botCache = data as Bot);
 }
 const coachByChat = async (chatId: number) =>
-  ((await admin.from('telegram_links').select('owner, chat_id, receipts_report').eq('chat_id', chatId).maybeSingle()).data as Coach | null);
+  ((await admin.from('telegram_links').select('owner, chat_id, receipts_report, blocked_at').eq('chat_id', chatId).maybeSingle()).data as Coach | null);
 
 async function tg(token: string, method: string, body: Record<string, unknown> = {}) {
   const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   });
   const out = await res.json().catch(() => ({ ok: false, description: 'Telegram ответил непонятно' }));
-  if (!out.ok) throw new Error(out.description || 'Ошибка Telegram');
+  if (!out.ok) throw Object.assign(new Error(out.description || 'Ошибка Telegram'), { code: out.error_code });
   return out.result;
 }
+// 403 from Telegram: the coach blocked the bot (or deleted the account). Retrying every minute won't help.
+const isBlocked = (e: unknown) => (e as { code?: number }).code === 403;
 // Long text in parts, then receipt photos as albums of up to 10. A failed album is logged, the rest still go out.
 // Returns the ids of payments whose photo reached the chat.
 async function sendReport(token: string, chatId: number, m: { text: string; photos?: { id: string; img: string; caption: string }[] }) {
@@ -70,18 +72,23 @@ async function stateOf(owner: string) {
   return data?.data ?? null;
 }
 const nowFor = (S: any) => wallNow(new Date(), S?.settings?.tz || DEFAULT_TZ);
-const status = (l: Coach | null, bot: Bot) => ({ connected: true, shared: true, chatLinked: !!l?.chat_id, botName: bot.bot_name, receipts: !!l?.receipts_report });
+const status = (l: Coach | null, bot: Bot) => ({ connected: true, shared: true, chatLinked: !!l?.chat_id, botName: bot.bot_name, receipts: !!l?.receipts_report, blocked: !!l?.blocked_at });
 
 async function tick() {
   const bot = await getBot();
-  const { data: links } = await admin.from('telegram_links').select('owner, chat_id, receipts_report').not('chat_id', 'is', null);
+  // A chat that blocked the bot is skipped until the coach writes to the bot again (see webhook).
+  const { data: links } = await admin.from('telegram_links').select('owner, chat_id, receipts_report').not('chat_id', 'is', null).is('blocked_at', null);
   let sent = 0;
   for (const l of (links ?? []) as Coach[]) {
     const S = await stateOf(l.owner);
     if (!S) continue;
-    const { data: rows } = await admin.from('sent_reminders').select('key').eq('owner', l.owner);
+    // Read only the keys this tick asks about: a dry run collects them, then one query says which were sent.
+    const now = nowFor(S), opts = { receipts: !!l.receipts_report }, asked = new Set<string>();
+    dueMessages(S, now, (k: string) => { asked.add(k); return false; }, opts);
+    if (!asked.size) continue;
+    const { data: rows } = await admin.from('sent_reminders').select('key').eq('owner', l.owner).in('key', [...asked]);
     const done = new Set((rows ?? []).map((r) => r.key));
-    for (const m of dueMessages(S, nowFor(S), (k: string) => done.has(k), { receipts: !!l.receipts_report })) {
+    for (const m of dueMessages(S, now, (k: string) => done.has(k), opts)) {
       // Claim the key first so two overlapping ticks never send the same message.
       const { error } = await admin.from('sent_reminders').insert({ owner: l.owner, key: m.key });
       if (error) continue;
@@ -95,6 +102,7 @@ async function tick() {
       } catch (e) {
         await admin.from('sent_reminders').delete().eq('owner', l.owner).eq('key', m.key);
         console.error(`telegram ${m.key}: ${(e as Error).message}`);
+        if (isBlocked(e)) { await admin.from('telegram_links').update({ blocked_at: new Date().toISOString() }).eq('owner', l.owner); break; }
       }
     }
   }
@@ -248,6 +256,8 @@ async function webhook(secret: string, update: any) {
   const chat = q?.message?.chat ?? m?.chat;
   if (!chat || chat.type !== 'private') return; // only one-to-one chats with a coach
   const coach = await coachByChat(chat.id);
+  // The coach writes or presses a button again after blocking the bot: reminders resume.
+  if (coach?.blocked_at) await admin.from('telegram_links').update({ blocked_at: null }).eq('owner', coach.owner);
   if (q) {
     if (/^(login|reg)\|/.test(String(q.data))) return loginAnswer(bot, q, coach);
     if (String(q.data) === 'sout|all') return signOutAnswer(bot, q, coach);
@@ -317,7 +327,7 @@ Deno.serve(async (req) => {
     const { data: auth } = await admin.auth.getUser(jwt);
     const user = auth?.user;
     if (!user) return json({ error: 'Войдите в сервис' }, 401);
-    const { data: cur } = await admin.from('telegram_links').select('owner, chat_id, receipts_report').eq('owner', user.id).maybeSingle();
+    const { data: cur } = await admin.from('telegram_links').select('owner, chat_id, receipts_report, blocked_at').eq('owner', user.id).maybeSingle();
     const link = cur as Coach | null;
     const bot = await getBot();
 

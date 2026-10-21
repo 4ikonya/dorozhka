@@ -257,3 +257,15 @@ test('loginPlace: устройство, IP и время в часовом по�
   assert.equal(loginPlace(r), 'Chrome, Windows · IP 203.0.113.7 · 21 октября, 10:22');
   assert.equal(loginPlace({ created_at: '2026-10-21T05:22:00Z' }, 'UTC'), 'неизвестный браузер, неизвестная система · IP неизвестен · 21 октября, 05:22');
 });
+
+/* ---------- reading only the needed sent keys (the tick's dry run) ---------- */
+test('dueMessages: пробный прогон спрашивает обо всех ключах, которые могут уйти', () => {
+  const S = state({ sessions: [sess({ start: '08:00' }), sess({ start: '10:30' }), sess({ start: '18:00' })], payments: [pay({ date: '2026-10-05' })] });
+  for (const t of ['2026-10-19T07:00', '2026-10-19T09:00', '2026-10-19T21:30', '2026-10-20T09:00']) {
+    const asked = new Set();
+    dueMessages(S, at(t), (k) => { asked.add(k); return false; }, { receipts: true });
+    const out = keys(dueMessages(S, at(t), never, { receipts: true }));
+    assert.ok(out.length > 0);
+    for (const k of out) assert.ok(asked.has(k), `${t}: ${k}`);
+  }
+});

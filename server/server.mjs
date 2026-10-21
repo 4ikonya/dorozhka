@@ -90,7 +90,16 @@ async function deliver(key, text, extra = {}) {
   try { await tg('sendMessage', { chat_id: tgRow().chat_id, text, ...extra }); console.log(`[telegram] ${key}`); }
   catch (e) { unmarkSent(key); console.error(`[telegram] ${key}: ${e.message}`); }
 }
+// Sent keys are needed only while a message can still be due (within a day); monthly receipts keys stay a year.
+let cleanedAt = 0;
+function cleanSent() {
+  if (Date.now() - cleanedAt < 3600000) return;
+  cleanedAt = Date.now();
+  const ago = (days) => new Date(Date.now() - days * 864e5).toISOString();
+  db.prepare("DELETE FROM sent WHERE (key NOT LIKE 'receipts:%' AND at < ?) OR at < ?").run(ago(3), ago(400));
+}
 async function tick() {
+  cleanSent();
   const t = tgRow();
   if (!t.token || !t.chat_id) return;
   const { state: S } = readState();
