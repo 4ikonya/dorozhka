@@ -769,7 +769,7 @@ function payList(){
     return !q||(c&&c.name.toLowerCase().includes(q))||(w&&w.name.toLowerCase().includes(q))||(qd.length>2&&digits(p.phone).includes(qd))});
   if(!list.length)return '<div class="empty">Чеков не нашли.</div>';
   return list.map(p=>{const c=client(p.clientId),w=client(p.with),t=tariff(p.tariff);return `<div class="prow">
-    <button class="thumb" data-act="view-receipt" data-id="${p.id}" aria-label="Открыть оплату">${p.img?`<img src="${p.img}" alt="">`:`<span class="small muted">${p.imgSentAt?'в Telegram':'без фото'}</span>`}</button>
+    <button class="thumb" data-act="view-receipt" data-id="${p.id}" aria-label="Открыть оплату">${p.img?`<img src="${esc(p.img)}" alt="">`:`<span class="small muted">${p.imgSentAt?'в Telegram':'без фото'}</span>`}</button>
     <div style="min-width:0"><button class="btn ghost" style="padding:0;font-weight:600;color:var(--ink);white-space:normal;text-align:left" data-act="open-client" data-id="${p.clientId}">${esc(c?.name||'Без клиента')}${w?` + ${esc(w.name.split(' ')[0])}`:''}</button><div class="small muted mono">${esc(p.phone)}</div></div>
     <div class="pmeta small muted">${t?esc(t.label):'Без тарифа'}<br>${fdateS(p.date)} · ${esc(p.method)} · ${p.sessions===1?'разовое':`${p.sessions} ${plural(p.sessions,'занятие','занятия','занятий')}`}${p.until?` · до ${fdateS(p.until)}`:''}</div>
     <div class="amt">${money(p.amount)}</div></div>`}).join('');
@@ -862,7 +862,7 @@ function vPlan(){
     ['Потом','Перенос занятия перетаскиванием в расписании.'],['Потом','Навыки ребёнка: погружение, скольжение, 25 м кролем. Отчёт-открытка для родителей.'],
     ['Потом','Время на 25/50 м с секундомером и график личных рекордов.']];
   const priceRows=Object.entries(TYPES).map(([k,v])=>{const ts=S.prices.filter(t=>t.type===k);if(!ts.length)return '';
-    return `<tr><td colspan="5" class="grp"><span class="chip t-${k}">${v.label}</span></td></tr>`+ts.map(t=>`<tr><td style="white-space:normal">${esc(t.label)}${t.note?`<br><span class="small muted">${t.note}</span>`:''}</td>${['one','p8','p10'].map(f=>`<td class="n"><input class="inp mono pinp" type="number" step="500" min="0" id="pr-${t.id}-${f}" value="${t[f]??''}" placeholder="—" data-price="${t.id}" data-pf="${f}" aria-label="${esc(t.label)}, ${f==='one'?'разовое':f==='p8'?'8 занятий':'10 занятий'}"></td>`).join('')}<td><button class="btn sm ghost danger" data-act="del-tariff" data-id="${t.id}" aria-label="Удалить тариф ${esc(t.label)}">${ic('x')}</button></td></tr>`).join('')}).join('');
+    return `<tr><td colspan="5" class="grp"><span class="chip t-${k}">${v.label}</span></td></tr>`+ts.map(t=>`<tr><td style="white-space:normal">${esc(t.label)}${t.note?`<br><span class="small muted">${esc(t.note)}</span>`:''}</td>${['one','p8','p10'].map(f=>`<td class="n"><input class="inp mono pinp" type="number" step="500" min="0" id="pr-${t.id}-${f}" value="${t[f]??''}" placeholder="—" data-price="${t.id}" data-pf="${f}" aria-label="${esc(t.label)}, ${f==='one'?'разовое':f==='p8'?'8 занятий':'10 занятий'}"></td>`).join('')}<td><button class="btn sm ghost danger" data-act="del-tariff" data-id="${t.id}" aria-label="Удалить тариф ${esc(t.label)}">${ic('x')}</button></td></tr>`).join('')}).join('');
   const addTariff=`<form id="f-tariff" class="sect" style="border-top:1px solid var(--line)" autocomplete="off"><h3>Новый тариф</h3>
     <div class="grid2"><label class="f" for="nt-label">Название<input class="inp" id="nt-label" name="label" placeholder="Например, Подросток, персонально" required></label>
       <label class="f" for="nt-type">Тип занятия<select class="inp" id="nt-type" name="type">${Object.entries(TYPES).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('')}</select></label></div>
@@ -953,7 +953,7 @@ function clientSheet(id){
     <div class="blockt"><label class="f" for="c-note">Заметка о клиенте</label><textarea class="inp" id="c-note" data-cfield="note" data-cid="${id}" placeholder="Особенности, страхи, цели">${esc(c.note)}</textarea></div>
     ${notes.length?`<div class="blockt"><h3>Последние заметки тренера</h3>${notes.map(s=>`<div class="prev-note"><span class="eyebrow">${fdateS(s.date)}</span><span>${esc(s.log)}</span></div>`).join('')}</div>`:''}
     <div class="blockt"><h3>История</h3><ul class="hist">${hist.map(s=>{const a=s.att[id];return `<li><span class="mono small">${fdateS(s.date).replace(/ (\S{3})\S*/,' $1')} ${s.start}</span><span class="small" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${TYPES[s.type].label}</span><span class="chip ${a==='present'?'lv-ok':a==='absent'?'lv-bad':a==='excused'?'lv-warn':'st-unmarked'}">${a?ATT[a]:s.cancelled?'Отменено':'Не отмечено'}</span></li>`}).join('')||'<li class="muted">Занятий ещё не было</li>'}</ul></div>
-    <div class="blockt"><h3>Чеки</h3>${pays.some(p=>p.img)?`<div class="rthumbs">${pays.filter(p=>p.img).map(p=>`<button class="thumb" data-act="view-receipt" data-id="${p.id}" aria-label="Чек от ${fdateS(p.date)}" title="${fdateS(p.date)} · ${money(p.amount)}"><img src="${p.img}" alt=""></button>`).join('')}</div>`:'<p class="muted small">Чеков нет</p>'}</div>
+    <div class="blockt"><h3>Чеки</h3>${pays.some(p=>p.img)?`<div class="rthumbs">${pays.filter(p=>p.img).map(p=>`<button class="thumb" data-act="view-receipt" data-id="${p.id}" aria-label="Чек от ${fdateS(p.date)}" title="${fdateS(p.date)} · ${money(p.amount)}"><img src="${esc(p.img)}" alt=""></button>`).join('')}</div>`:'<p class="muted small">Чеков нет</p>'}</div>
   </div><div class="sheet-f"><button class="btn ghost danger" data-act="del-client" data-id="${id}">Удалить клиента</button><button class="btn primary" data-act="close">Готово</button></div>`,'c:'+id);
 }
 
@@ -999,7 +999,7 @@ function newClientSheet(){
   </form>`,'new-c');
 }
 function tariffExtra(t,cid,n){
-  const chips=`<div class="blockt"><span class="f">Пакет</span><div class="chips">${pkgs(t).map(([k,l])=>`<button type="button" class="fchip" data-act="pkg" data-n="${k}" aria-pressed="${k===n}">${l} · ${money(priceFor(t,k))}</button>`).join('')}</div>${t.note?`<span class="small muted">Цена ${t.note}</span>`:''}</div>`;
+  const chips=`<div class="blockt"><span class="f">Пакет</span><div class="chips">${pkgs(t).map(([k,l])=>`<button type="button" class="fchip" data-act="pkg" data-n="${k}" aria-pressed="${k===n}">${l} · ${money(priceFor(t,k))}</button>`).join('')}</div>${t.note?`<span class="small muted">Цена ${esc(t.note)}</span>`:''}</div>`;
   if(!t.pair&&t.id!=='family')return chips;
   const me=client(cid),sib=me?S.clients.filter(x=>x.id!==me.id&&digits(x.phone).slice(-10)===digits(me.phone).slice(-10)):[];
   const def=sib[0]?.id||'';
@@ -1037,7 +1037,7 @@ function matchHTML(p,sel){
   return '';
 }
 function receiptSheet(id){const p=S.payments.find(x=>x.id===id);if(!p)return;const c=client(p.clientId),w=client(p.with),t=tariff(p.tariff);
-  openSheet(`${sheetHead('Чек · '+money(p.amount),`${esc(c?.name||'')}${w?' и '+esc(w.name):''} · <span class="mono">${esc(p.phone)}</span> · ${fdateS(p.date)} · ${esc(p.method)}`)}<div class="sheet-b">${p.img?`<img class="big-receipt" src="${p.img}" alt="Чек оплаты">`:p.imgSentAt?`<p class="muted">Фото чека отправлено вам в Telegram ${fdateS(p.imgSentAt)} в отчёте за месяц и удалено из сервиса, чтобы он не тяжелел.</p>`:'<p class="muted">Фото чека не прикреплено.</p>'}
+  openSheet(`${sheetHead('Чек · '+money(p.amount),`${esc(c?.name||'')}${w?' и '+esc(w.name):''} · <span class="mono">${esc(p.phone)}</span> · ${fdateS(p.date)} · ${esc(p.method)}`)}<div class="sheet-b">${p.img?`<img class="big-receipt" src="${esc(p.img)}" alt="Чек оплаты">`:p.imgSentAt?`<p class="muted">Фото чека отправлено вам в Telegram ${fdateS(p.imgSentAt)} в отчёте за месяц и удалено из сервиса, чтобы он не тяжелел.</p>`:'<p class="muted">Фото чека не прикреплено.</p>'}
   <p class="small muted">${t?esc(t.label)+' · ':''}${p.sessions===1?'разовое занятие':`+${p.sessions} ${plural(p.sessions,'занятие','занятия','занятий')}${w?' каждому':''}`}${p.until?` · действует до ${fdateS(p.until)}`:''}</p></div>
   <div class="sheet-f"><button class="btn ghost danger" data-act="del-payment" data-id="${p.id}">Удалить чек</button><button class="btn" data-act="open-client" data-id="${p.clientId}">Карточка клиента</button></div>`,'r:'+id)}
 function groupSheet(id,type){
@@ -1334,7 +1334,7 @@ document.addEventListener('change',e=>{
   if(t.name==='m'&&t.closest('#f-group')){const f=t.closest('form');    document.getElementById('ng-count').textContent=people(f.querySelectorAll('[name="m"]:checked').length)}
   if(t.id==='ob-file'&&t.files[0]){t.files[0].text().then(txt=>{const d=JSON.parse(txt);
       if(!Array.isArray(d.clients)||!Array.isArray(d.sessions)||!Array.isArray(d.payments))throw new Error('bad');
-      S=d;if(!S.prices)S.prices=PRICES.map(x=>({...x}));persist();closeSheet();
+      S=fromImport(d);persist();closeSheet();
       toast('Данные перенесены',`${S.clients.length} ${plural(S.clients.length,'клиент','клиента','клиентов')}, ${S.payments.length} ${plural(S.payments.length,'оплата','оплаты','оплат')}`)})
     .catch(()=>toast('Не тот файл','Нужен state-export.json из версии на ноутбуке'));return}
   if(t.id==='np-file'&&t.files[0]){const f=t.files[0];const img=new Image();const url=URL.createObjectURL(f);
@@ -1347,9 +1347,6 @@ document.addEventListener('change',e=>{
 });
 document.addEventListener('submit',e=>{
   e.preventDefault();const f=e.target,fd=new FormData(f);
-  if(f.id==='f-login'){const email=String(fd.get('email')||'').trim(),msg=document.getElementById('lg-msg'),btn=f.querySelector('button');btn.disabled=true;msg.textContent='Отправляю…';
-    sb.auth.signInWithOtp({email,options:{shouldCreateUser:false,emailRedirectTo:location.origin+location.pathname}})
-      .then(({error})=>{btn.disabled=false;msg.textContent=error?(/signup|not allowed|not found/i.test(error.message)?'Эта почта не приглашена в сервис. Проверьте, что ввели ту же почту, что в Supabase.':'Не отправилось: '+error.message):`Ссылка отправлена на ${email}. Откройте письмо на этом устройстве и нажмите на ссылку.`});return}
   if(f.id==='f-session'){
     const type=fd.get('type'),kind=fd.get('kind')||null;let clientIds,groupId=null;
     if(GROUPISH(type)){groupId=fd.get('group');if(!groupId){toast('Нет группы','Сначала создайте группу этого типа');return}clientIds=[...group(groupId).clientIds]}
@@ -1407,12 +1404,17 @@ const BE={
     const r=data[0];if(r.is_conflict){const e=new Error('conflict');e.status=409;e.body={version:r.new_version,state:r.current_data};throw e}return {version:r.new_version}},
   async tg(action,body){
     if(!CLOUD){const [m,u]={status:['GET','/api/telegram'],connect:['POST','/api/telegram'],test:['POST','/api/telegram/test'],disconnect:['DELETE','/api/telegram']}[action];return api(m,u,body)}
+    if(action!=='status'&&action!=='test')throw new Error('В облаке бот общий, подключать его не нужно');
     const {data:{session}}=await sb.auth.getSession();
     const r=await fetch(`${CLOUD.url}/functions/v1/telegram/${action}`,{method:'POST',headers:{'content-type':'application/json',apikey:CLOUD.anonKey,authorization:'Bearer '+(session?.access_token||'')},body:JSON.stringify(body||{})});
     const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||('Ошибка '+r.status));return j}
 };
 // A new journal gets the same tariffs with empty prices: the coach writes in their own.
 const emptyState=()=>({v:3,clients:[],groups:[],sessions:[],payments:[],prices:PRICES.map(t=>({...t,one:null,p8:null,p10:null})),settings:{chargeNoShow:true,remindCoach:'2h',morningDigest:true}});
+// A file from the laptop version may lack newer fields (settings, groups…): they come from a new journal.
+function fromImport(d){const e=emptyState(),tz=S?.settings?.tz;
+  return {...e,...d,groups:Array.isArray(d.groups)?d.groups:[],vacations:Array.isArray(d.vacations)?d.vacations:[],prices:Array.isArray(d.prices)?d.prices:PRICES.map(x=>({...x})),
+    settings:{...e.settings,...(d.settings&&typeof d.settings==='object'?d.settings:{}),...(tz&&!d.settings?.tz?{tz}:{}),onboarded:true}}}
 async function pushState(){clearTimeout(SERVER.timer);SERVER.timer=null;
   try{const j=await BE.save(SERVER.version,S);SERVER.version=j.version;SERVER.dirty=false;
     if(SERVER.offline){SERVER.offline=false;toast('Связь с сервером есть','Изменения сохранены')}}
@@ -1427,15 +1429,16 @@ function tgBlock(){
   const t=UI.tg;
   if(!t)return '<p class="small muted">Проверяю Telegram…</p>';
   // Cloud: one shared bot for every coach; the chat was linked when the coach signed up.
-  if(t.shared&&t.blocked)return `<div class="blockt"><h3>Telegram @${esc(t.botName)} <span class="chip lv-bad">бот заблокирован</span></h3><p class="small muted">Telegram не даёт боту писать вам, поэтому напоминания не приходят. Откройте бота, разблокируйте его и отправьте любое сообщение — напоминания возобновятся.</p><div class="row"><a class="btn primary" href="https://t.me/${esc(t.botName)}" target="_blank" rel="noopener">Открыть @${esc(t.botName)}</a><button class="btn ghost" data-act="tg-refresh">Проверить</button></div></div>`;
-  if(t.shared)return t.chatLinked?`<div class="blockt"><h3>Telegram @${esc(t.botName)} <span class="chip lv-ok">работает</span></h3><p class="small muted">Напоминания, сводка дня и кнопки посещения приходят в ваш чат с ботом круглосуточно, даже когда сервис закрыт. Клиентам бот ничего не пишет. Команды: /today, /next${t.receipts?', /receipts':''}.</p>
+  if(CLOUD&&t.blocked)return `<div class="blockt"><h3>Telegram @${esc(t.botName)} <span class="chip lv-bad">бот заблокирован</span></h3><p class="small muted">Telegram не даёт боту писать вам, поэтому напоминания не приходят. Откройте бота, разблокируйте его и отправьте любое сообщение — напоминания возобновятся.</p><div class="row"><a class="btn primary" href="https://t.me/${esc(t.botName)}" target="_blank" rel="noopener">Открыть @${esc(t.botName)}</a><button class="btn ghost" data-act="tg-refresh">Проверить</button></div></div>`;
+  if(CLOUD)return t.chatLinked?`<div class="blockt"><h3>Telegram @${esc(t.botName)} <span class="chip lv-ok">работает</span></h3><p class="small muted">Напоминания, сводка дня и кнопки посещения приходят в ваш чат с ботом круглосуточно, даже когда сервис закрыт. Клиентам бот ничего не пишет. Команды: /today, /next${t.receipts?', /receipts':''}.</p>
     <div class="row"><button class="btn" data-act="tg-test">Отправить тестовое сообщение</button><a class="btn ghost" href="https://t.me/${esc(t.botName)}" target="_blank" rel="noopener">Открыть @${esc(t.botName)}</a></div></div>`
     :`<div class="blockt"><h3>Telegram @${esc(t.botName)}</h3><p class="small muted">Откройте бота и нажмите «Start», чтобы напоминания приходили вам.</p><div class="row"><a class="btn primary" href="https://t.me/${esc(t.botName)}" target="_blank" rel="noopener">Открыть @${esc(t.botName)}</a><button class="btn ghost" data-act="tg-refresh">Проверить</button></div></div>`;
-  if(!t.connected)return `<div class="blockt"><h3>Напоминания в Telegram</h3><p class="small muted">Откройте в Telegram @BotFather, отправьте /newbot и придумайте имя боту. Он пришлёт токен — вставьте его сюда. ${CLOUD?'Токен хранится в закрытой таблице сервиса, приложение его не показывает.':'Токен хранится только в базе на этом ноутбуке.'}</p>
+  // Laptop server: the coach connects their own bot by its token.
+  if(!t.connected)return `<div class="blockt"><h3>Напоминания в Telegram</h3><p class="small muted">Откройте в Telegram @BotFather, отправьте /newbot и придумайте имя боту. Он пришлёт токен — вставьте его сюда. Токен хранится только в базе на этом ноутбуке.</p>
     <div class="row" style="flex-wrap:nowrap"><input class="inp mono" id="tg-token" type="password" autocomplete="off" placeholder="123456789:AA…" aria-label="Токен бота от BotFather"><button class="btn primary" data-act="tg-connect">Подключить</button></div></div>`;
   if(!t.chatLinked)return `<div class="blockt"><h3>Бот @${esc(t.botName)} подключён</h3><p class="small muted">Остался один шаг: откройте бота в Telegram и нажмите «Start». После этого он будет писать только вам.</p>
     <div class="row"><a class="btn primary" href="https://t.me/${esc(t.botName)}" target="_blank" rel="noopener">Открыть @${esc(t.botName)}</a><button class="btn ghost" data-act="tg-refresh">Проверить</button><button class="btn ghost danger" data-act="tg-off">Отключить</button></div></div>`;
-  return `<div class="blockt"><h3>Telegram @${esc(t.botName)} <span class="chip lv-ok">работает</span></h3><p class="small muted">${CLOUD?'Напоминания и сводка приходят круглосуточно, даже когда сервис закрыт.':'Напоминания и сводка приходят вам в Telegram, пока сервер запущен — даже если эта страница закрыта.'} Команды боту: /today, /next.</p>
+  return `<div class="blockt"><h3>Telegram @${esc(t.botName)} <span class="chip lv-ok">работает</span></h3><p class="small muted">Напоминания и сводка приходят вам в Telegram, пока сервер запущен — даже если эта страница закрыта. Команды боту: /today, /next.</p>
     <div class="row"><button class="btn" data-act="tg-test">Отправить тестовое сообщение</button><button class="btn ghost danger" data-act="tg-off">Отключить</button></div></div>`;
 }
 
@@ -1446,10 +1449,7 @@ function renderLogin(msg){
   document.getElementById('main').innerHTML=`<div class="login card"><div class="rope"></div><div class="sect">
     <h1>Дорожка</h1><p class="muted">Вход и регистрация через Telegram, без почты и паролей. Новый тренер? Бот предложит создать ваш личный журнал.</p>
     <div class="blockt" id="lg-tg"><button class="btn primary" data-act="tg-login">Войти или создать журнал</button></div>
-    <p class="small muted" id="lg-msg" aria-live="polite">${msg||''}</p>
-    <details class="small muted"><summary>Войти по почте</summary>
-      <form id="f-login" class="blockt" autocomplete="on"><label class="f" for="lg-email">Почта<input class="inp" id="lg-email" name="email" type="email" required autocomplete="email"></label>
-        <button class="btn" type="submit">Прислать ссылку для входа</button></form></details></div></div>`;
+    <p class="small muted" id="lg-msg" aria-live="polite">${msg||''}</p></div></div>`;
   let pend=null;try{pend=JSON.parse(sessionStorage.getItem('dz-login')||'null')}catch(e){}
   if(pend&&pend.until>Date.now())tgLoginWait(pend);
 }

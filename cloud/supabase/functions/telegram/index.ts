@@ -1,6 +1,6 @@
 // Telegram for «Дорожка» in the cloud. One function, four kinds of callers:
 //   POST /telegram/tick            — pg_cron every minute (x-cron-secret, checked by the database): sends due reminders
-//   POST /telegram/hook/<secret>   — webhook of the shared bot: sign-in and sign-up, attendance buttons, /today, /next, /receipts (owner only)
+//   POST /telegram/hook            — webhook of the shared bot (secret in X-Telegram-Bot-Api-Secret-Token; the old /hook/<secret> still works): sign-in and sign-up, attendance buttons, /today, /next, /receipts (owner only)
 //   POST /telegram/login/start|poll — the login screen: sign in (or create a journal) by confirming in the bot
 //   POST /telegram/status|test     — the signed-in coach from the app
 // Every coach has their own account and data; the bot tells them apart by their Telegram chat.
@@ -256,7 +256,7 @@ const WELCOME = 'Это бот «Дорожки» — журнала трене�
 
 async function webhook(secret: string, update: any) {
   const bot = await getBot();
-  if (secret !== bot.hook_secret) return;
+  if (!secret || secret !== bot.hook_secret) return;
   const q = update?.callback_query, m = update?.message;
   const chat = q?.message?.chat ?? m?.chat;
   if (!chat || chat.type !== 'private') return; // only one-to-one chats with a coach
@@ -314,9 +314,11 @@ Deno.serve(async (req) => {
       if (ok !== true) return json({ error: 'forbidden' }, 403);
       return json(await tick());
     }
-    const hook = path.match(/^\/hook\/([a-f0-9]{32})$/);
+    // The secret comes in Telegram's X-Telegram-Bot-Api-Secret-Token header (setWebhook secret_token).
+    // The old webhook URL with the secret in the path keeps working until setWebhook is called again.
+    const hook = path.match(/^\/hook(?:\/([a-f0-9]{32}))?$/);
     if (hook) {
-      await webhook(hook[1], await req.json().catch(() => null));
+      await webhook(hook[1] ?? req.headers.get('x-telegram-bot-api-secret-token') ?? '', await req.json().catch(() => null));
       return json({ ok: true }); // always 200, or Telegram keeps retrying
     }
     if (path === '/login/start') return await loginStart(req);
