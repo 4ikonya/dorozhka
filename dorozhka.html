@@ -1534,6 +1534,8 @@ async function boot(){
     try{sb=window.supabase.createClient(CLOUD.url,CLOUD.anonKey)}catch(e){renderLogin('Не удалось подключиться к облаку. Проверьте интернет и обновите страницу.');return}
     const {data:{session}}=await sb.auth.getSession();
     if(!session){renderLogin();sb.auth.onAuthStateChange((ev,s)=>{if(s)location.reload()});return}
+    // «Это не я — завершить все сеансы» in the bot revokes this session too: go back to the login screen.
+    sb.auth.onAuthStateChange(ev=>{if(ev==='SIGNED_OUT')location.reload()});
     try{const j=await BE.load();SERVER.on=true;SERVER.version=j.version;
       if(j.state){S=j.state;if(!S.prices)S.prices=PRICES.map(t=>({...t}))}else S=emptyState();
       // An empty record (the first visit saves the time zone) still offers the import, until the coach starts clean.

@@ -5,7 +5,7 @@
 //   POST /telegram/status|test     — the signed-in coach from the app
 // Every coach has their own account and data; the bot tells them apart by their Telegram chat.
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
-import { applyAttendance, attendanceView, dayText, dueMessages, forgetPhotos, nextText, photoForms, receiptsReport, receiptsSoFar, startText, textChunks, wallNow } from '../_shared/schedule.mjs';
+import { applyAttendance, attendanceView, dayText, dueMessages, forgetPhotos, loginPlace, nextText, photoForms, receiptsReport, receiptsSoFar, startText, textChunks, wallNow } from '../_shared/schedule.mjs';
 
 const SB_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -121,7 +121,8 @@ async function loginStart(req: Request) {
   if ((mine ?? 0) >= 6) return json({ error: 'Слишком много попыток входа. Подождите 10 минут.' }, 429);
   const nonce = crypto.randomUUID().replaceAll('-', '');
   const code = String(100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000));
-  const { error } = await admin.from('login_requests').insert({ nonce, code, ip });
+  const ua = (req.headers.get('user-agent') ?? '').slice(0, 400);
+  const { error } = await admin.from('login_requests').insert({ nonce, code, ip, ua });
   if (error) throw new Error(error.message);
   return json({ nonce, code, bot: bot.bot_name, ttl: LOGIN_TTL_MIN * 60 });
 }
@@ -139,16 +140,56 @@ async function loginPoll(nonce: string) {
   // generateLink sends no email; the site verifies the hashed token and gets a normal session.
   const { data: link, error } = await admin.auth.admin.generateLink({ type: 'magiclink', email: u.user.email });
   if (error) throw new Error(error.message);
+  await tellLogin(r).catch((e) => console.error(`telegram login notice: ${(e as Error).message}`));
   return json({ status: 'ok', token_hash: link.properties.hashed_token });
 }
 
+// After every login the coach hears about it, with a button that ends every session if it was not them
+// (someone sent them a login link and they pressed «Да, войти»).
+async function tellLogin(r: { owner: string; ip?: string; ua?: string; created_at: string }) {
+  const { data: l } = await admin.from('telegram_links').select('chat_id').eq('owner', r.owner).maybeSingle();
+  if (!l?.chat_id) return;
+  const bot = await getBot();
+  await tg(bot.token, 'sendMessage', {
+    chat_id: l.chat_id,
+    text: `Выполнен вход в Дорожку: ${loginPlace(r)}.\nЕсли это были не вы, завершите все сеансы: журнал закроется на всех устройствах, и войти можно будет только заново через этого бота.`,
+    reply_markup: { inline_keyboard: [[{ text: 'Это не я — завершить все сеансы', callback_data: 'sout|all' }]] },
+  });
+}
+// supabase-js 2.45 ends sessions only by a user's own JWT: auth.admin.signOut(jwt, 'global') revokes every refresh
+// token of that user. The function has no JWT of the coach, so it signs in as them once (magic link, verified here)
+// and signs that session out globally. Access tokens already issued stay valid until they expire (an hour at most).
+async function signOutEverywhere(owner: string) {
+  const { data: u } = await admin.auth.admin.getUserById(owner);
+  if (!u?.user?.email) throw new Error('Аккаунт тренера не найден');
+  const { data: link, error } = await admin.auth.admin.generateLink({ type: 'magiclink', email: u.user.email });
+  if (error) throw new Error(error.message);
+  const once = createClient(SB_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+  const { data: v, error: e2 } = await once.auth.verifyOtp({ token_hash: link.properties.hashed_token, type: 'magiclink' });
+  if (e2 || !v.session) throw new Error(e2?.message || 'Не удалось завершить сеансы');
+  const { error: e3 } = await admin.auth.admin.signOut(v.session.access_token, 'global');
+  if (e3) throw new Error(e3.message);
+}
+async function signOutAnswer(bot: Bot, q: any, coach: Coach | null) {
+  let text = 'Все сеансы завершены. Журнал закрыт на всех устройствах; войдите заново через «Войти или создать журнал» на сайте.';
+  if (!coach) text = 'Этот чат не связан с журналом.';
+  else {
+    try { await signOutEverywhere(coach.owner); }
+    catch (e) { console.error(`telegram signout: ${(e as Error).message}`); text = 'Не получилось завершить сеансы. Нажмите кнопку ещё раз через минуту.'; }
+  }
+  const failed = text.startsWith('Не получилось');
+  await tg(bot.token, 'editMessageText', { chat_id: q.message.chat.id, message_id: q.message.message_id, text: `${q.message.text ?? ''}\n\n${text}`,
+    ...(failed ? { reply_markup: q.message.reply_markup } : {}) }).catch(() => {});
+  await tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id, text: failed ? 'Ошибка' : 'Сеансы завершены' }).catch(() => {});
+}
+
 const openRequest = async (nonce: string) =>
-  (await admin.from('login_requests').select('nonce, code').eq('nonce', nonce).is('approved_at', null).gt('created_at', fresh()).maybeSingle()).data;
+  (await admin.from('login_requests').select('nonce, code, ip, ua, created_at').eq('nonce', nonce).is('approved_at', null).gt('created_at', fresh()).maybeSingle()).data;
 const approve = async (nonce: string, owner: string) =>
   !!(await admin.from('login_requests').update({ owner, approved_at: new Date().toISOString() })
     .eq('nonce', nonce).is('approved_at', null).gt('created_at', fresh()).select('nonce')).data?.length;
 const STALE = 'Ссылка для входа устарела. Нажмите «Начать через Telegram» на сайте ещё раз.';
-const WARN = 'Нажимайте, только если вы сами сейчас на dorozhka.vercel.app и видите этот код. Если ссылку прислал кто-то другой — нажмите «Это не я».';
+const WARN = 'Нажимайте, только если вы сами сейчас на dorozhka.vercel.app, видите этот код и узнаёте браузер и время. Если ссылку прислал кто-то другой — нажмите «Это не я».';
 
 // A coach signs in; a chat the service has never seen is offered a new, empty journal instead.
 async function loginAsk(bot: Bot, chatId: number, nonce: string, coach: Coach | null) {
@@ -158,7 +199,7 @@ async function loginAsk(bot: Bot, chatId: number, nonce: string, coach: Coach | 
   const intro = coach ? '' : '\nБудет создан ваш личный журнал: клиенты, расписание и оплаты видны только вам, напоминания приходят сюда.\n';
   return tg(bot.token, 'sendMessage', {
     chat_id: chatId,
-    text: `${title}\n${intro}\nКод на экране: ${r.code}\n${WARN}`,
+    text: `${title}\n${intro}\nКод на экране: ${r.code}\nЗапрос: ${loginPlace(r)}\n${WARN}`,
     reply_markup: { inline_keyboard: [[{ text: yes, callback_data: `${act}|${nonce}|y` }, { text: 'Это не я', callback_data: `${act}|${nonce}|n` }]] },
   });
 }
@@ -209,6 +250,7 @@ async function webhook(secret: string, update: any) {
   const coach = await coachByChat(chat.id);
   if (q) {
     if (/^(login|reg)\|/.test(String(q.data))) return loginAnswer(bot, q, coach);
+    if (String(q.data) === 'sout|all') return signOutAnswer(bot, q, coach);
     if (!coach) return tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id }).catch(() => {});
     // Bump the version so an open app sees the change and reloads instead of overwriting it.
     const { data: row } = await admin.from('app_state').select('data, version').eq('owner', coach.owner).maybeSingle();

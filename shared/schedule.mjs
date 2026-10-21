@@ -239,6 +239,23 @@ export function forgetPhotos(S, ids, day) {
   return n;
 }
 
+/* ---------- login through the bot ---------- */
+const BROWSERS = [[/YaBrowser\//, 'Яндекс Браузер'], [/Edg(e|A|iOS)?\//, 'Edge'], [/OPR\/|Opera/, 'Opera'], [/SamsungBrowser\//, 'Samsung Internet'],
+  [/Firefox\/|FxiOS\//, 'Firefox'], [/Chrome\/|CriOS\//, 'Chrome'], [/Safari\//, 'Safari']];
+const SYSTEMS = [[/iPhone|iPad|iPod/, 'iOS'], [/Android/, 'Android'], [/CrOS/, 'ChromeOS'], [/Windows/, 'Windows'], [/Mac OS X|Macintosh/, 'macOS'], [/Linux/, 'Linux']];
+/** «Chrome, Windows» from a User-Agent string, for the coach to recognise their own device. */
+export function deviceOf(ua) {
+  const s = String(ua || '');
+  const b = BROWSERS.find(([re]) => re.test(s))?.[1] || 'неизвестный браузер';
+  const o = SYSTEMS.find(([re]) => re.test(s))?.[1] || 'неизвестная система';
+  return `${b}, ${o}`;
+}
+/** Where and when a login was asked for: «Chrome, Windows · IP 1.2.3.4 · 21 октября, 10:22». */
+export function loginPlace(r, tz = DEFAULT_TZ) {
+  const w = wallNow(new Date(r.created_at || Date.now()), tz);
+  return `${deviceOf(r.ua)} · IP ${r.ip || 'неизвестен'} · ${w.getUTCDate()} ${MONTHS[w.getUTCMonth()]}, ${hm(w)}`;
+}
+
 // A session's keys carry its date and time, so a session moved after its reminder gets one for the new time.
 // The keys without them (sent before this change) still count as sent, so nothing is sent twice after the update;
 // they are cleaned up with the other old keys after a few days.

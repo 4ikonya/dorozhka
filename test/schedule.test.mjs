@@ -2,7 +2,7 @@
 // Times are wall-clock values in the coach's zone, kept in the UTC fields of a Date (as wallNow returns them).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyAttendance, dueMessages, receiptsPeriod, receiptsSoFar, remaining, syncMakeup, textChunks } from '../shared/schedule.mjs';
+import { applyAttendance, deviceOf, dueMessages, loginPlace, receiptsPeriod, receiptsSoFar, remaining, syncMakeup, textChunks } from '../shared/schedule.mjs';
 
 const at = (iso) => new Date(`${iso}Z`);
 let n = 0;
@@ -241,4 +241,19 @@ test('textChunks: режет по строкам, не длиннее преде
   assert.ok(parts.length > 1);
   assert.ok(parts.every((p) => p.length <= 4000));
   assert.equal(parts.join('\n'), long);
+});
+
+/* ---------- login notices ---------- */
+test('deviceOf: браузер и система из User-Agent', () => {
+  assert.equal(deviceOf('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'), 'Chrome, Windows');
+  assert.equal(deviceOf('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1'), 'Safari, iOS');
+  assert.equal(deviceOf('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0'), 'Edge, macOS');
+  assert.equal(deviceOf('Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 YaBrowser/24.10 Mobile Safari/537.36'), 'Яндекс Браузер, Android');
+  assert.equal(deviceOf('Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0'), 'Firefox, Linux');
+  assert.equal(deviceOf(''), 'неизвестный браузер, неизвестная система');
+});
+test('loginPlace: устройство, IP и время в часовом поясе', () => {
+  const r = { ua: 'Mozilla/5.0 (Windows NT 10.0) Chrome/130.0 Safari/537.36', ip: '203.0.113.7', created_at: '2026-10-21T05:22:00Z' };
+  assert.equal(loginPlace(r), 'Chrome, Windows · IP 203.0.113.7 · 21 октября, 10:22');
+  assert.equal(loginPlace({ created_at: '2026-10-21T05:22:00Z' }, 'UTC'), 'неизвестный браузер, неизвестная система · IP неизвестен · 21 октября, 05:22');
 });
