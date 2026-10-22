@@ -525,7 +525,8 @@ function persist(){if(SERVER.on){SERVER.dirty=true;clearTimeout(SERVER.timer);SE
 const REAL=()=>!!(CLOUD||SERVER.on);
 // The monthly receipts report is the service owner's own feature: the cloud says who has it; the laptop server is the owner's.
 const hasReceipts=()=>CLOUD?!!UI.tg?.receipts:SERVER.on;
-const SERVER={on:false,version:0,timer:null,dirty:false,offline:false};
+// base: the state as the server last confirmed it, so a version conflict can merge instead of dropping the coach's edits.
+const SERVER={on:false,version:0,base:null,timer:null,dirty:false,offline:false,merges:0};
 const UI={tg:null,view:'today',week:0,selDay:null,cFilter:'all',cQuery:'',pQuery:'',period:'month',rType:'all',pendingImg:null,openSheet:null};
 
 const client=id=>S.clients.find(c=>c.id===id);
@@ -1415,10 +1416,15 @@ const emptyState=()=>({v:3,clients:[],groups:[],sessions:[],payments:[],prices:P
 function fromImport(d){const e=emptyState(),tz=S?.settings?.tz;
   return {...e,...d,groups:Array.isArray(d.groups)?d.groups:[],vacations:Array.isArray(d.vacations)?d.vacations:[],prices:Array.isArray(d.prices)?d.prices:PRICES.map(x=>({...x})),
     settings:{...e.settings,...(d.settings&&typeof d.settings==='object'?d.settings:{}),...(tz&&!d.settings?.tz?{tz}:{}),onboarded:true}}}
-async function pushState(){clearTimeout(SERVER.timer);SERVER.timer=null;
-  try{const j=await BE.save(SERVER.version,S);SERVER.version=j.version;SERVER.dirty=false;
+async function pushState(){clearTimeout(SERVER.timer);SERVER.timer=null;const sent=structuredClone(S);
+  try{const j=await BE.save(SERVER.version,sent);SERVER.version=j.version;SERVER.base=sent;SERVER.dirty=!!SERVER.timer;SERVER.merges=0;
     if(SERVER.offline){SERVER.offline=false;toast('Связь с сервером есть','Изменения сохранены')}}
-  catch(e){if(e.status===409&&e.body?.state){S=e.body.state;SERVER.version=e.body.version;SERVER.dirty=false;render();toast('Данные обновились','Их изменили в другой вкладке, показываю свежую версию')}
+  catch(e){if(e.status===409&&e.body?.state){
+      // Saved meanwhile elsewhere (another device, a Telegram button): put the coach's edits on top of it and save again.
+      const remote=e.body.state;S=L.mergeStates(SERVER.base,S,structuredClone(remote));SERVER.base=remote;SERVER.version=e.body.version;
+      if(!UI.openSheet)render();
+      SERVER.dirty=true;SERVER.timer=setTimeout(pushState,++SERVER.merges>3?5000:0);
+      if(SERVER.merges===1)toast('Данные обновились','Изменения с другого устройства или из Telegram объединены с вашими')}
     else if(/too large/.test(e.message)){toast('Не удалось сохранить','Журнал стал слишком большим для облака. Удалите лишние фото чеков и попробуйте снова.',{sticky:true})}
     else{if(!SERVER.offline){SERVER.offline=true;toast('Нет связи с сервером','Изменения сохранятся, когда он снова заработает')}SERVER.timer=setTimeout(pushState,5000)}}}
 async function tgRefresh(){if(!SERVER.on)return;try{UI.tg=await BE.tg('status')}catch(e){UI.tg=null}
@@ -1513,7 +1519,7 @@ async function boot(){
     if(!session){renderLogin();sb.auth.onAuthStateChange((ev,s)=>{if(s)location.reload()});return}
     // «Это не я — завершить все сеансы» in the bot revokes this session too: go back to the login screen.
     sb.auth.onAuthStateChange(ev=>{if(ev==='SIGNED_OUT')location.reload()});
-    try{const j=await BE.load();SERVER.on=true;SERVER.version=j.version;
+    try{const j=await BE.load();SERVER.on=true;SERVER.version=j.version;SERVER.base=structuredClone(j.state);
       if(j.state){S=j.state;if(!S.prices)S.prices=PRICES.map(t=>({...t}))}else S=emptyState();
       // An empty record (the first visit saves the time zone) still offers the import, until the coach starts clean.
       if(!S.clients.length&&!S.sessions.length&&!S.payments.length&&!S.settings?.onboarded)setTimeout(onboardSheet,300);
@@ -1522,7 +1528,7 @@ async function boot(){
   }
   else if(/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)){
     try{const j=await api('GET','/api/state');if(typeof j.version!=='number')throw new Error('no server');
-      SERVER.on=true;SERVER.version=j.version;
+      SERVER.on=true;SERVER.version=j.version;SERVER.base=structuredClone(j.state);
       if(j.state){S=j.state;if(!S.prices)S.prices=PRICES.map(t=>({...t}))}else{S=emptyState();await pushState()}
       document.querySelector('.side-foot').textContent='Данные хранятся в базе на этом ноутбуке.';
       tgRefresh()}catch(e){SERVER.on=false}}
@@ -1534,7 +1540,7 @@ async function boot(){
   setTimeout(checkReminders,800);setInterval(checkReminders,20000);
   // Pick up changes made elsewhere (Telegram buttons, another device) while nothing is being edited here.
   if(SERVER.on)setInterval(async()=>{if(SERVER.dirty||SERVER.timer||UI.openSheet||document.hidden)return;
-    try{const j=await BE.load();if(j.version>SERVER.version&&j.state){S=j.state;SERVER.version=j.version;render()}}catch(e){}},15000);
+    try{const j=await BE.load();if(j.version>SERVER.version&&j.state&&!SERVER.dirty&&!SERVER.timer){S=j.state;SERVER.base=structuredClone(j.state);SERVER.version=j.version;render()}}catch(e){}},15000);
 }
 boot();
 </script>

@@ -279,6 +279,63 @@ function forgetPhotos(S, ids, day) {
   return n;
 }
 
+/* ---------- merging after a version conflict ---------- */
+const sameJSON = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const isObj = (x) => !!x && typeof x === 'object' && !Array.isArray(x);
+const isEntityList = (a) => Array.isArray(a) && a.every((x) => isObj(x) && typeof x.id === 'string');
+/**
+ * Three-way merge of the app state: `base` is what both sides started from, `local` has the coach's edits,
+ * `remote` is what was saved meanwhile (another device, a Telegram button). What only one side changed is taken
+ * from that side. Objects merge by key, lists of entities (sessions, clients, payments…) by id, so a note typed
+ * in a session and an attendance mark from Telegram on the same session both survive. When both changed the same
+ * value, the coach's edit wins. A deletion is applied unless the other side changed the deleted thing.
+ */
+function merge3(base, local, remote) {
+  if (sameJSON(local, base)) return remote;
+  if (sameJSON(remote, base) || sameJSON(local, remote)) return local;
+  if (isObj(local) && isObj(remote)) {
+    const b = isObj(base) ? base : {}, out = {};
+    for (const k of new Set([...Object.keys(remote), ...Object.keys(local)])) {
+      const inL = k in local, inR = k in remote;
+      if (!inL && k in b && sameJSON(remote[k], b[k])) continue; // removed here, untouched there
+      if (!inR && k in b && sameJSON(local[k], b[k])) continue; // removed there, untouched here
+      out[k] = !inL ? remote[k] : !inR ? local[k] : merge3(b[k], local[k], remote[k]);
+    }
+    return out;
+  }
+  if (isEntityList(local) && isEntityList(remote)) {
+    const ids = (a) => new Map((isEntityList(a) ? a : []).map((x) => [x.id, x]));
+    const bm = ids(base), lm = ids(local), rm = ids(remote), out = [];
+    for (const r of remote) {
+      const l = lm.get(r.id), b = bm.get(r.id);
+      if (l) out.push(merge3(b, l, r));
+      else if (!b || !sameJSON(r, b)) out.push(r); // new there, or changed there after being removed here
+    }
+    for (const l of local) {
+      if (rm.has(l.id)) continue;
+      const b = bm.get(l.id);
+      if (!b || !sameJSON(l, b)) out.push(l); // new here, or changed here after being removed there
+    }
+    return out;
+  }
+  return local;
+}
+/** merge3 on the whole state, then the rules a merge can break: sessions in order, one make-up per session. */
+function mergeStates(base, local, remote) {
+  const S = merge3(base, local, remote);
+  if (Array.isArray(S?.sessions)) {
+    // Both sides may have added a make-up for the same session: keep the marked one, else the first.
+    const ext = new Map();
+    for (const s of S.sessions) if (s.extOf) {
+      const cur = ext.get(s.extOf);
+      if (!cur || (!Object.keys(cur.att || {}).length && Object.keys(s.att || {}).length)) ext.set(s.extOf, s);
+    }
+    S.sessions = S.sessions.filter((s) => !s.extOf || ext.get(s.extOf) === s);
+    S.sessions.sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start));
+  }
+  return S;
+}
+
 /* ---------- login through the bot ---------- */
 const BROWSERS = [[/YaBrowser\//, 'Яндекс Браузер'], [/Edg(e|A|iOS)?\//, 'Edge'], [/OPR\/|Opera/, 'Opera'], [/SamsungBrowser\//, 'Samsung Internet'],
   [/Firefox\/|FxiOS\//, 'Firefox'], [/Chrome\/|CriOS\//, 'Chrome'], [/Safari\//, 'Safari']];
@@ -337,6 +394,7 @@ function dueMessages(S, wnow, wasSent, opts = {}) {
 }
 
 globalThis.DorozhkaLogic = Object.freeze({
+  merge3, mergeStates,
   prevSession, prevNote, charged, balance, pausesOf, pauseAt,
   TYPE, LEAD, DEFAULT_TZ, wallNow, startOf, dayKey, durOf, titleOf, remaining, reminderText, dayText, nextText, startText, isPaused, activeClients, attendanceView, applyAttendance, syncMakeup, RECEIPT_DAY, receiptsPeriod, receiptsSoFar, receiptsReport, textChunks, photoForms, forgetPhotos, deviceOf, loginPlace, dueMessages,
 });

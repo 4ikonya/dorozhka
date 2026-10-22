@@ -2,7 +2,7 @@
 // Times are wall-clock values in the coach's zone, kept in the UTC fields of a Date (as wallNow returns them).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyAttendance, balance, charged, deviceOf, dueMessages, loginPlace, receiptsPeriod, receiptsSoFar, remaining, syncMakeup, textChunks } from '../shared/schedule.mjs';
+import { applyAttendance, balance, charged, deviceOf, merge3, mergeStates, dueMessages, loginPlace, receiptsPeriod, receiptsSoFar, remaining, syncMakeup, textChunks } from '../shared/schedule.mjs';
 
 const at = (iso) => new Date(`${iso}Z`);
 let n = 0;
@@ -294,4 +294,57 @@ test('dueMessages: пробный прогон спрашивает обо вс�
     assert.ok(out.length > 0);
     for (const k of out) assert.ok(asked.has(k), `${t}: ${k}`);
   }
+});
+
+/* ---------- merging after a version conflict ---------- */
+const clone = (x) => JSON.parse(JSON.stringify(x));
+test('mergeStates: заметка тренера и отметка из Telegram на одном занятии сохраняются обе', () => {
+  const s = sess({ date: '2026-10-19' });
+  const base = state({ sessions: [s] });
+  const local = clone(base), remote = clone(base);
+  local.sessions[0].log = 'Хорошо держала дыхание';
+  applyAttendance(remote, `a|${s.id}|c1|p`);
+  const out = mergeStates(base, local, remote);
+  assert.equal(out.sessions[0].log, 'Хорошо держала дыхание');
+  assert.deepEqual(out.sessions[0].att, { c1: 'present' });
+});
+test('merge3: одно и то же поле изменили обе стороны — побеждает тренер', () => {
+  const base = { settings: { remindCoach: '2h', morningDigest: true } };
+  const out = merge3(base, { settings: { remindCoach: '30m', morningDigest: true } }, { settings: { remindCoach: '1d', morningDigest: false } });
+  assert.deepEqual(out, { settings: { remindCoach: '30m', morningDigest: false } });
+});
+test('merge3: новые сущности с обеих сторон, удаления применяются', () => {
+  const base = state({ payments: [pay({ id: 'p1' }), pay({ id: 'p2' }), pay({ id: 'p3' })] });
+  const local = clone(base), remote = clone(base);
+  local.payments.push(pay({ id: 'pL' }));
+  local.payments = local.payments.filter((p) => p.id !== 'p1');
+  remote.payments.push(pay({ id: 'pR' }));
+  remote.payments = remote.payments.filter((p) => p.id !== 'p2');
+  assert.deepEqual(merge3(base, local, remote).payments.map((p) => p.id), ['p3', 'pR', 'pL']);
+});
+test('merge3: удаление не теряет изменения другой стороны', () => {
+  const base = state({ clients: [{ id: 'c1', name: 'Аня' }] });
+  const local = clone(base), remote = clone(base);
+  local.clients = [];
+  remote.clients[0].note = 'новая заметка';
+  assert.deepEqual(merge3(base, local, remote).clients, [{ id: 'c1', name: 'Аня', note: 'новая заметка' }]);
+});
+test('merge3: изменения только одной стороны берутся целиком', () => {
+  const base = state();
+  const remote = clone(base);
+  remote.settings.tz = 'Asia/Almaty';
+  assert.equal(merge3(base, clone(base), remote), remote);
+  const local = clone(base);
+  local.vacations.push({ from: '2026-11-01', to: '2026-11-07' });
+  assert.equal(merge3(base, local, clone(base)), local);
+});
+test('mergeStates: две отработки на одно занятие схлопываются в одну', () => {
+  const s = sess({ date: '2026-10-19' });
+  const base = state({ sessions: [s, sess({ date: '2026-10-21' })] });
+  const local = clone(base), remote = clone(base);
+  applyAttendance(local, `a|${s.id}|c1|e`);
+  applyAttendance(remote, `a|${s.id}|c1|e`);
+  const out = mergeStates(base, local, remote);
+  assert.equal(out.sessions.filter((x) => x.extOf === s.id).length, 1);
+  assert.deepEqual(out.sessions.map((x) => x.date), [...out.sessions.map((x) => x.date)].sort());
 });
