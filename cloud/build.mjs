@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Builds cloud/web (the site Vercel serves) and copies the shared reminder logic into the Supabase function:
+// Builds cloud/web (the site Cloudflare Pages serves on dorozhka.app) and copies the shared reminder logic into the Supabase function:
 //   /       the landing page (landing.html; until it exists, a redirect to /app)
 //   /app    the journal, with the Supabase project baked in
 //   /demo   the same journal on demo data in the browser, no account
@@ -78,15 +78,23 @@ fs.writeFileSync(path.join(web, 'icon.svg'), `<svg xmlns="http://www.w3.org/2000
 <g fill="#DE4A30"><circle cx="128" cy="408" r="22"/><circle cx="208" cy="408" r="22"/><circle cx="288" cy="408" r="22"/><circle cx="368" cy="408" r="22"/></g>
 </svg>`);
 
+const SITE = 'https://dorozhka.app';
+const securityHeaders = [
+  { key: 'X-Frame-Options', value: 'DENY' },
+  { key: 'Referrer-Policy', value: 'same-origin' },
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=()' },
+];
+
+// Cloudflare Pages (dorozhka.app): /app and /demo resolve to their index.html by themselves, only headers are needed.
+fs.writeFileSync(path.join(web, '_headers'), '/*\n' + securityHeaders.map(h => `  ${h.key}: ${h.value}\n`).join(''));
+
+// Vercel (the old dorozhka.vercel.app): every address is sent to the same page on dorozhka.app.
 fs.writeFileSync(path.join(web, 'vercel.json'), JSON.stringify({
+  redirects: [{ source: '/:path*', has: [{ type: 'host', value: 'dorozhka.vercel.app' }], destination: `${SITE}/:path*`, permanent: true }],
   cleanUrls: true,
   rewrites: [{ source: '/app', destination: '/app/index.html' }, { source: '/demo', destination: '/demo/index.html' }],
-  headers: [{ source: '/(.*)', headers: [
-    { key: 'X-Frame-Options', value: 'DENY' },
-    { key: 'Referrer-Policy', value: 'same-origin' },
-    { key: 'X-Content-Type-Options', value: 'nosniff' },
-    { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=()' },
-  ] }],
+  headers: [{ source: '/(.*)', headers: securityHeaders }],
 }, null, 2));
 
 console.log(`Готово: ${path.relative(root, web)}/ (Supabase: ${cloud.url})`);

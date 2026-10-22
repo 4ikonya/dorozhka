@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://dorozhka.vercel.app"><img alt="Сайт" src="https://img.shields.io/badge/live-dorozhka.vercel.app-0A6383?logo=vercel&logoColor=white"></a>
+  <a href="https://dorozhka.app"><img alt="Сайт" src="https://img.shields.io/badge/live-dorozhka.app-0A6383?logo=cloudflare&logoColor=white"></a>
   <img alt="Supabase" src="https://img.shields.io/badge/Supabase-Postgres%20%2B%20Edge%20Functions-3ECF8E?logo=supabase&logoColor=white">
   <img alt="Telegram" src="https://img.shields.io/badge/Telegram-бот%20тренера-26A5E4?logo=telegram&logoColor=white">
   <img alt="Node.js" src="https://img.shields.io/badge/Node.js-24-5FA04E?logo=nodedotjs&logoColor=white">
@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://dorozhka.vercel.app"><b>Открыть сервис</b></a> ·
+  <a href="https://dorozhka.app"><b>Открыть сервис</b></a> ·
   <a href="#возможности">Возможности</a> ·
   <a href="#скриншоты">Скриншоты</a> ·
   <a href="#telegram-бот">Telegram-бот</a> ·
@@ -168,7 +168,7 @@
 flowchart TB
   coach(["Тренер: телефон или ноутбук"])
   tg["Telegram Bot API"]
-  site["dorozhka.html на Vercel<br/>одна страница, PWA"]
+  site["dorozhka.html на Cloudflare Pages<br/>одна страница, PWA"]
   subgraph Supabase
     direction TB
     fn["Edge Function telegram<br/>напоминания, webhook, привязка чата"]
@@ -250,7 +250,7 @@ sequenceDiagram
 | Данные | Supabase Postgres, RLS, RPC `save_state` | Одна «тетрадь» тренера, защита от перезаписи, бэкапы |
 | Фон | pg_cron и Edge Function (Deno) | Напоминания приходят, даже когда сайт закрыт |
 | Бот | Telegram Bot API, webhook | Тренер и так в Telegram; кнопки работают сразу |
-| Хостинг | Vercel, статический сайт | HTTPS и заголовки безопасности бесплатно |
+| Хостинг | Cloudflare Pages, статический сайт на dorozhka.app | HTTPS, CDN и заголовки безопасности бесплатно, коммерческое использование разрешено |
 | Чеки | tesseract.js на устройстве, Supabase Storage | Чек распознаётся на устройстве, без сторонних сервисов. В облаке фото хранится в закрытом хранилище: открыть его может только сам тренер |
 | Локальный режим | Node 24, встроенный `node:sqlite` | Работает на ноутбуке без облака и без зависимостей |
 
@@ -260,7 +260,7 @@ sequenceDiagram
 
 **Тренеру**
 
-1. Откройте https://dorozhka.vercel.app и нажмите **«Войти через Google»**.
+1. Откройте https://dorozhka.app и нажмите **«Войти через Google»**.
 2. В разделе «Ещё» нажмите **«Подключить Telegram»** и подтвердите в боте. На компьютере можно навести камеру телефона на QR-код.
 3. Добавьте сервис на экран телефона:
    - iPhone: Safari → «Поделиться» → «На экран „Домой“»;
@@ -281,11 +281,11 @@ python3 -m http.server 8000
 ## Разработка и выкладка
 
 ```bash
-npm install                  # Supabase CLI и Vercel CLI
+npm install                  # Supabase CLI и Vercel CLI (Wrangler запускается через npx)
 npm test                     # тесты (node:test, без зависимостей)
 node cloud/build.mjs         # собирает сайт в cloud/web и копирует shared/ в функцию
 npx supabase functions deploy telegram --no-verify-jwt --workdir cloud
-npx vercel deploy --prod --yes --cwd cloud/web
+npx wrangler@4 pages deploy cloud/web --project-name dorozhka --branch main
 ```
 
 **Миграции.** Каждую новую миграцию применяйте так:
@@ -401,7 +401,7 @@ node server/server.mjs       # порт 4318
 ## Благодарности
 
 - [Supabase](https://supabase.com) — база, вход, функции и cron
-- [Vercel](https://vercel.com) — хостинг сайта
+- [Cloudflare Pages](https://pages.cloudflare.com) — хостинг сайта
 - [tesseract.js](https://github.com/naptha/tesseract.js) — чтение чеков на устройстве
 - [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) — QR-код для входа
 - [Telegram Bot API](https://core.telegram.org/bots/api)

@@ -6,7 +6,7 @@
 ## Устройство
 
 - `dorozhka.html` — всё приложение в одном файле: разметка, CSS и vanilla JS, без сборщика и фреймворков. Режим зависит от того, где открыт файл:
-  - **облако** (`window.DOROZHKA_CLOUD`, сайт на Vercel): вход и регистрация только через Google (Supabase Auth, PKCE; почта, телефон и анонимный вход выключены в `config.toml`), данные в Supabase. Telegram тренер подключает в настройках. Сайт: `/` — лендинг (`landing.html`), `/app` — журнал, `/demo` — журнал на демо-данных;
+  - **облако** (`window.DOROZHKA_CLOUD`, сайт на Cloudflare Pages, https://dorozhka.app): вход и регистрация только через Google (Supabase Auth, PKCE; почта, телефон и анонимный вход выключены в `config.toml`), данные в Supabase. Telegram тренер подключает в настройках. Сайт: `/` — лендинг (`landing.html`), `/app` — журнал, `/demo` — журнал на демо-данных;
   - **локальный сервер** (`server/server.mjs`, порт 4318): SQLite в `data/`;
   - **демо** (файл открыт напрямую): `localStorage` и `seed()`.
 - Всё состояние — один JSON-документ `S` (`clients`, `groups`, `sessions`, `payments`, `prices`, `settings`, `vacations`). Изменения сохраняются через `persist()`, после чего вызывается `render()` или открывается нужный лист. В облаке документ лежит в таблице `app_state`, а сохранение проверяет версию через RPC `save_state`.
@@ -39,7 +39,8 @@
 
 ```bash
 node cloud/build.mjs                                                    # собрать cloud/web
-npx vercel deploy --prod --yes --cwd cloud/web                          # выложить сайт
+npx wrangler@4 pages deploy cloud/web --project-name dorozhka --branch main  # выложить сайт
+npx vercel deploy --prod --yes --cwd cloud/web                          # только переадресация dorozhka.vercel.app → dorozhka.app
 npx supabase functions deploy telegram --no-verify-jwt --workdir cloud  # выложить функцию бота
 npx supabase db query --linked --workdir cloud -f supabase/migrations/<file>.sql  # применить миграцию
 ```
