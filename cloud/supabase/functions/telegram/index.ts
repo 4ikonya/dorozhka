@@ -83,35 +83,42 @@ async function tick() {
   const bot = await getBot();
   // A chat that blocked the bot is skipped until the coach writes to the bot again (see webhook).
   const { data: links } = await admin.from('telegram_links').select('owner, chat_id, receipts_report').not('chat_id', 'is', null).is('blocked_at', null);
-  let sent = 0;
+  let sent = 0, failed = 0;
+  // One coach's broken data or a failed query must not stop the reminders of everybody else.
   for (const l of (links ?? []) as Coach[]) {
-    const S = await stateOf(l.owner);
-    if (!S) continue;
-    // Read only the keys this tick asks about: a dry run collects them, then one query says which were sent.
-    const now = nowFor(S), opts = { receipts: !!l.receipts_report }, asked = new Set<string>();
-    dueMessages(S, now, (k: string) => { asked.add(k); return false; }, opts);
-    if (!asked.size) continue;
-    const { data: rows } = await admin.from('sent_reminders').select('key').eq('owner', l.owner).in('key', [...asked]);
-    const done = new Set((rows ?? []).map((r) => r.key));
-    for (const m of dueMessages(S, now, (k: string) => done.has(k), opts)) {
-      // Claim the key first so two overlapping ticks never send the same message.
-      const { error } = await admin.from('sent_reminders').insert({ owner: l.owner, key: m.key });
-      if (error) continue;
-      try {
-        if (m.photos) {
-          const ids = await sendReport(bot.token, l.chat_id as number, m);
-          if (m.purge) await dropSentPhotos(l.owner, ids, m.key.slice(9) + '-20');
-        }
-        else await tg(bot.token, 'sendMessage', { chat_id: l.chat_id, text: m.text, ...(m.reply_markup ? { reply_markup: m.reply_markup } : {}) });
-        sent++;
-      } catch (e) {
-        await admin.from('sent_reminders').delete().eq('owner', l.owner).eq('key', m.key);
-        console.error(`telegram ${m.key}: ${(e as Error).message}`);
-        if (isBlocked(e)) { await admin.from('telegram_links').update({ blocked_at: new Date().toISOString() }).eq('owner', l.owner); break; }
+    try { sent += await tickCoach(bot, l); }
+    catch (e) { failed++; console.error(`telegram tick ${l.owner.slice(0, 8)}: ${(e as Error).message}`); }
+  }
+  return { ok: true, sent, failed };
+}
+async function tickCoach(bot: Bot, l: Coach) {
+  let sent = 0;
+  const S = await stateOf(l.owner);
+  if (!S) return 0;
+  // Read only the keys this tick asks about: a dry run collects them, then one query says which were sent.
+  const now = nowFor(S), opts = { receipts: !!l.receipts_report }, asked = new Set<string>();
+  dueMessages(S, now, (k: string) => { asked.add(k); return false; }, opts);
+  if (!asked.size) return 0;
+  const { data: rows } = await admin.from('sent_reminders').select('key').eq('owner', l.owner).in('key', [...asked]);
+  const done = new Set((rows ?? []).map((r) => r.key));
+  for (const m of dueMessages(S, now, (k: string) => done.has(k), opts)) {
+    // Claim the key first so two overlapping ticks never send the same message.
+    const { error } = await admin.from('sent_reminders').insert({ owner: l.owner, key: m.key });
+    if (error) continue;
+    try {
+      if (m.photos) {
+        const ids = await sendReport(bot.token, l.chat_id as number, m);
+        if (m.purge) await dropSentPhotos(l.owner, ids, m.key.slice(9) + '-20');
       }
+      else await tg(bot.token, 'sendMessage', { chat_id: l.chat_id, text: m.text, ...(m.reply_markup ? { reply_markup: m.reply_markup } : {}) });
+      sent++;
+    } catch (e) {
+      await admin.from('sent_reminders').delete().eq('owner', l.owner).eq('key', m.key);
+      console.error(`telegram ${m.key}: ${(e as Error).message}`);
+      if (isBlocked(e)) { await admin.from('telegram_links').update({ blocked_at: new Date().toISOString() }).eq('owner', l.owner); break; }
     }
   }
-  return { ok: true, sent };
+  return sent;
 }
 
 /* ---------- login through the bot ---------- */
@@ -318,8 +325,10 @@ Deno.serve(async (req) => {
     // The old webhook URL with the secret in the path keeps working until setWebhook is called again.
     const hook = path.match(/^\/hook(?:\/([a-f0-9]{32}))?$/);
     if (hook) {
-      await webhook(hook[1] ?? req.headers.get('x-telegram-bot-api-secret-token') ?? '', await req.json().catch(() => null));
-      return json({ ok: true }); // always 200, or Telegram keeps retrying
+      // Always 200, or Telegram keeps retrying the update: a failure is logged, never answered with 500.
+      try { await webhook(hook[1] ?? req.headers.get('x-telegram-bot-api-secret-token') ?? '', await req.json().catch(() => null)); }
+      catch (e) { console.error(`telegram webhook: ${(e as Error).message}`); }
+      return json({ ok: true });
     }
     if (path === '/login/start') return await loginStart(req);
     if (path === '/login/poll') {
