@@ -2,15 +2,23 @@ project_id = "dorozhka"
 
 [auth]
 site_url = "https://dorozhka.vercel.app"
-additional_redirect_urls = ["https://dorozhka.vercel.app", "https://dorozhka.vercel.app/"]
-# Coaches sign up only through the Telegram bot: the telegram function creates the account with the admin API.
-# Nobody can sign up through Supabase Auth directly.
+# The app sends Google back to the page it was opened on (/app). dorozhka.com is the domain to come.
+additional_redirect_urls = ["https://dorozhka.vercel.app/app", "https://dorozhka.com/app", "https://www.dorozhka.com/app"]
+# Coaches sign up and sign in with Google only: Google is the one provider switched on below,
+# email, phone and anonymous logins are off, so nobody can create an account any other way.
+enable_signup = true
+enable_anonymous_sign_ins = false
+
+[auth.email]
 enable_signup = false
 
-# This switch is the email login itself (magic link), not sign-ups: it must stay on. The site no longer offers
-# a login by email, but the bot login hands the browser a magic-link token (verifyOtp), which needs it.
-[auth.email]
-enable_signup = true
+# Client ID and secret come from Google Cloud (Google Auth Platform → Clients, type «Web application»).
+# The secret is never committed: set it in the environment or in the dashboard (Authentication → Providers → Google).
+[auth.external.google]
+enabled = true
+client_id = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_ID)"
+secret = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_SECRET)"
+skip_nonce_check = false
 
 # The function checks its own callers: the coach's login token, Telegram's secret
 # webhook path, or the cron secret.

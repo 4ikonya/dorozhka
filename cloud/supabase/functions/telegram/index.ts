@@ -1,9 +1,8 @@
 // Telegram for «Дорожка» in the cloud. One function, four kinds of callers:
 //   POST /telegram/tick            — pg_cron every minute (x-cron-secret, checked by the database): sends due reminders
 //   POST /telegram/cleanup         — pg_cron daily (same secret): receipt photos older than a year are deleted
-//   POST /telegram/hook            — webhook of the shared bot (secret in X-Telegram-Bot-Api-Secret-Token; the old /hook/<secret> still works): sign-in and sign-up, attendance buttons, /today, /next, /receipts (owner only)
-//   POST /telegram/login/start|poll — the login screen: sign in (or create a journal) by confirming in the bot
-//   POST /telegram/status|test     — the signed-in coach from the app
+//   POST /telegram/hook            — webhook of the shared bot (secret in X-Telegram-Bot-Api-Secret-Token; the old /hook/<secret> still works): linking a chat to a journal, attendance buttons, /today, /next, /receipts (owner only)
+//   POST /telegram/status|test|link|unlink — the signed-in coach from the app (coaches sign in with Google)
 // Every coach has their own account and data; the bot tells them apart by their Telegram chat.
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
 import { applyAttendance, attendanceView, dayKey, dayText, dueMessages, expirePhotos, forgetPhotos, loginPlace, nextText, photoForms, receiptsReport, receiptsSoFar, startText, textChunks, wallNow } from '../_shared/schedule.mjs';
@@ -160,145 +159,105 @@ async function tickCoach(bot: Bot, l: Coach) {
   return sent;
 }
 
-/* ---------- login through the bot ---------- */
-const LOGIN_TTL_MIN = 10;
-const CODE_TRIES = 5;
-const fresh = () => new Date(Date.now() - LOGIN_TTL_MIN * 60_000).toISOString();
+/* ---------- linking a Telegram chat to a journal ---------- */
+// Coaches sign in with Google. In the settings the app asks for a one-time link request (/link), opens the bot
+// with it, and the coach confirms in the bot that this chat belongs to their journal.
+const LINK_TTL_MIN = 10;
+const fresh = () => new Date(Date.now() - LINK_TTL_MIN * 60_000).toISOString();
+// Accounts the bot created before the Google login (no real address, never mailed). Such a journal moves
+// into the coach's Google account when they link the same chat from it (merge_into_legacy).
+const isLegacy = (email?: string | null) => /^tg-?\d+@users\.dorozhka\.example$/.test(email ?? '');
+const emailOf = async (owner: string) => (await admin.auth.admin.getUserById(owner)).data?.user?.email ?? null;
+// A journal with no clients, sessions or payments: only such a one may be replaced by the old journal.
+const isEmpty = (S: any) => !S || !((S.clients?.length ?? 0) + (S.sessions?.length ?? 0) + (S.payments?.length ?? 0));
 
-// Limits are per caller address, so a stranger requesting codes can't lock the coach out (there is no shared limit
-// any longer: one source could close the login for everybody). Supabase does not document a trusted client-IP header.
+// The address the bot shows with a link request. Supabase does not document a trusted client-IP header.
 // The platform sits behind Cloudflare, which overwrites cf-connecting-ip with the real address; x-forwarded-for keeps
 // whatever the caller sent in front, and the proxy appends the real address last, so never trust its first entry.
 const callerIp = (req: Request) =>
   req.headers.get('cf-connecting-ip')?.trim() || (req.headers.get('x-forwarded-for') ?? '').split(',').pop()!.trim() || 'unknown';
 
-async function loginStart(req: Request) {
+async function linkStart(req: Request, owner: string) {
   const bot = await getBot();
-  await admin.from('login_requests').delete().lt('created_at', new Date(Date.now() - 864e5).toISOString());
-  const ip = callerIp(req);
-  const { count: mine } = await admin.from('login_requests').select('nonce', { count: 'exact', head: true }).eq('ip', ip).gt('created_at', fresh());
-  if ((mine ?? 0) >= 6) return json({ error: 'Слишком много попыток входа. Подождите 10 минут.' }, 429);
+  await admin.from('link_requests').delete().lt('created_at', new Date(Date.now() - 864e5).toISOString());
+  const { count } = await admin.from('link_requests').select('nonce', { count: 'exact', head: true }).eq('owner', owner).gt('created_at', fresh());
+  if ((count ?? 0) >= 6) return json({ error: 'Слишком много попыток. Подождите 10 минут.' }, 429);
   const nonce = crypto.randomUUID().replaceAll('-', '');
-  const code = String(100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000));
   const ua = (req.headers.get('user-agent') ?? '').slice(0, 400);
-  const { error } = await admin.from('login_requests').insert({ nonce, code, ip, ua });
+  const { error } = await admin.from('link_requests').insert({ nonce, owner, ip: callerIp(req), ua });
   if (error) throw new Error(error.message);
-  return json({ nonce, code, bot: bot.bot_name, ttl: LOGIN_TTL_MIN * 60 });
+  return json({ nonce, bot: bot.bot_name, ttl: LINK_TTL_MIN * 60 });
 }
-
-async function loginPoll(nonce: string) {
-  const { data: r } = await admin.from('login_requests').select('*').eq('nonce', nonce).gt('created_at', fresh()).maybeSingle();
-  if (!r || r.used_at) return json({ status: 'expired' });
-  if (!r.approved_at) return json({ status: 'wait' });
-  // Use the request once: only the poll that flips used_at gets the session.
-  const { data: took } = await admin.from('login_requests').update({ used_at: new Date().toISOString() })
-    .eq('nonce', nonce).is('used_at', null).select('owner');
-  if (!took?.length) return json({ status: 'expired' });
-  const { data: u } = await admin.auth.admin.getUserById(r.owner);
-  if (!u?.user?.email) throw new Error('Аккаунт тренера не найден');
-  // generateLink sends no email; the site verifies the hashed token and gets a normal session.
-  const { data: link, error } = await admin.auth.admin.generateLink({ type: 'magiclink', email: u.user.email });
-  if (error) throw new Error(error.message);
-  await tellLogin(r).catch((e) => console.error(`telegram login notice: ${(e as Error).message}`));
-  return json({ status: 'ok', token_hash: link.properties.hashed_token });
-}
-
-// After every login the coach hears about it, with a button that ends every session if it was not them
-// (someone sent them a login link and they pressed «Да, войти»).
-async function tellLogin(r: { owner: string; ip?: string; ua?: string; created_at: string }) {
-  const { data: l } = await admin.from('telegram_links').select('chat_id').eq('owner', r.owner).maybeSingle();
-  if (!l?.chat_id) return;
-  const bot = await getBot();
-  await tg(bot.token, 'sendMessage', {
-    chat_id: l.chat_id,
-    text: `Выполнен вход в Дорожку: ${loginPlace(r)}.\nЕсли это были не вы, завершите все сеансы: журнал закроется на всех устройствах, и войти можно будет только заново через этого бота.`,
-    reply_markup: { inline_keyboard: [[{ text: 'Это не я — завершить все сеансы', callback_data: 'sout|all' }]] },
-  });
-}
-// supabase-js 2.45 ends sessions only by a user's own JWT: auth.admin.signOut(jwt, 'global') revokes every refresh
-// token of that user. The function has no JWT of the coach, so it signs in as them once (magic link, verified here)
-// and signs that session out globally. Access tokens already issued stay valid until they expire (an hour at most).
-async function signOutEverywhere(owner: string) {
-  const { data: u } = await admin.auth.admin.getUserById(owner);
-  if (!u?.user?.email) throw new Error('Аккаунт тренера не найден');
-  const { data: link, error } = await admin.auth.admin.generateLink({ type: 'magiclink', email: u.user.email });
-  if (error) throw new Error(error.message);
-  const once = createClient(SB_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
-  const { data: v, error: e2 } = await once.auth.verifyOtp({ token_hash: link.properties.hashed_token, type: 'magiclink' });
-  if (e2 || !v.session) throw new Error(e2?.message || 'Не удалось завершить сеансы');
-  const { error: e3 } = await admin.auth.admin.signOut(v.session.access_token, 'global');
-  if (e3) throw new Error(e3.message);
-}
-async function signOutAnswer(bot: Bot, q: any, coach: Coach | null) {
-  let text = 'Все сеансы завершены. Журнал закрыт на всех устройствах; войдите заново через «Войти или создать журнал» на сайте.';
-  if (!coach) text = 'Этот чат не связан с журналом.';
-  else {
-    try { await signOutEverywhere(coach.owner); }
-    catch (e) { console.error(`telegram signout: ${(e as Error).message}`); text = 'Не получилось завершить сеансы. Нажмите кнопку ещё раз через минуту.'; }
-  }
-  const failed = text.startsWith('Не получилось');
-  await tg(bot.token, 'editMessageText', { chat_id: q.message.chat.id, message_id: q.message.message_id, text: `${q.message.text ?? ''}\n\n${text}`,
-    ...(failed ? { reply_markup: q.message.reply_markup } : {}) }).catch(() => {});
-  await tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id, text: failed ? 'Ошибка' : 'Сеансы завершены' }).catch(() => {});
-}
-
+// The request is checked again when the button is pressed: it may have been used or have expired meanwhile.
 const openRequest = async (nonce: string) =>
-  (await admin.from('login_requests').select('nonce, code, ip, ua, created_at').eq('nonce', nonce).is('approved_at', null).gt('created_at', fresh()).maybeSingle()).data;
-const approve = async (nonce: string, owner: string) =>
-  !!(await admin.from('login_requests').update({ owner, approved_at: new Date().toISOString() })
-    .eq('nonce', nonce).is('approved_at', null).gt('created_at', fresh()).select('nonce')).data?.length;
-const STALE = 'Ссылка для входа устарела. Нажмите «Начать через Telegram» на сайте ещё раз.';
-const WARN = 'Нажимайте, только если вы сами сейчас на dorozhka.vercel.app, видите этот код и узнаёте браузер и время. Если ссылку прислал кто-то другой — нажмите «Это не я».';
+  (await admin.from('link_requests').select('nonce, owner, ip, ua, created_at').eq('nonce', nonce).is('used_at', null).gt('created_at', fresh()).maybeSingle()).data;
+const claim = async (nonce: string) =>
+  !!(await admin.from('link_requests').update({ used_at: new Date().toISOString() })
+    .eq('nonce', nonce).is('used_at', null).gt('created_at', fresh()).select('nonce')).data?.length;
+const STALE = 'Ссылка устарела. Нажмите «Подключить Telegram» в настройках журнала ещё раз.';
+const WARN = 'Нажимайте, только если вы сами сейчас подключаете Telegram в своём журнале и это ваша почта. Если ссылку прислал кто-то другой — нажмите «Нет».';
+const DONE = 'Сюда будут приходить напоминания о занятиях, сводка дня в 7:00 и кнопки отметки посещения. Клиентам бот ничего не пишет.';
 
-// A coach signs in; a chat the service has never seen is offered a new, empty journal instead.
-async function loginAsk(bot: Bot, chatId: number, nonce: string, coach: Coach | null) {
+// /start link_<nonce>: the bot says which journal asks for this chat and what pressing «Да» will do.
+async function linkAsk(bot: Bot, chatId: number, nonce: string, coach: Coach | null) {
   const r = await openRequest(nonce);
   if (!r) return tg(bot.token, 'sendMessage', { chat_id: chatId, text: STALE });
-  const [title, yes, act] = coach ? ['Вход в Дорожку', 'Да, войти', 'login'] : ['Новый журнал в Дорожке', 'Да, создать журнал', 'reg'];
-  const intro = coach ? '' : '\nБудет создан ваш личный журнал: клиенты, расписание и оплаты видны только вам, напоминания приходят сюда.\n';
-  return tg(bot.token, 'sendMessage', {
-    chat_id: chatId,
-    text: `${title}\n${intro}\nКод на экране: ${r.code}\nЗапрос: ${loginPlace(r)}\n${WARN}`,
-    reply_markup: { inline_keyboard: [[{ text: yes, callback_data: `${act}|${nonce}|y` }, { text: 'Это не я', callback_data: `${act}|${nonce}|n` }]] },
+  const email = await emailOf(r.owner);
+  if (!email) return tg(bot.token, 'sendMessage', { chat_id: chatId, text: STALE });
+  const say = (text: string, act?: string, yes?: string) => tg(bot.token, 'sendMessage', {
+    chat_id: chatId, text,
+    ...(act ? { reply_markup: { inline_keyboard: [[{ text: yes, callback_data: `${act}|${nonce}|y` }, { text: 'Нет', callback_data: `${act}|${nonce}|n` }]] } } : {}),
   });
+  const place = `Запрос: ${loginPlace(r)}`;
+  if (coach?.owner === r.owner) return say(`Этот чат уже подключён к журналу ${email}.`);
+  if (coach) {
+    const old = await emailOf(coach.owner);
+    if (!isLegacy(old)) return say(`Этот Telegram уже подключён к другому журналу (${old}). Сначала отключите его в настройках того журнала.`);
+    if (!isEmpty(await stateOf(r.owner))) {
+      return say(`У этого Telegram есть журнал, в который вы входили через бота. Перенести его можно только в пустой журнал, а в ${email} уже есть клиенты или занятия. Войдите через Google с другой почтой или напишите в поддержку.`);
+    }
+    return say(`Перенос журнала\n\nЭтот Telegram связан с журналом, в который вы входили через бота. Перенести его в аккаунт Google ${email}?\n\nКлиенты, расписание, оплаты и чеки сохранятся, а входить вы будете через Google. Пустой журнал этого аккаунта удалится.\n\n${place}\n${WARN}`, 'move', 'Да, перенести');
+  }
+  return say(`Подключение Telegram\n\nПодключить этот чат к журналу ${email}?\n\n${place}\n${WARN}`, 'link', 'Да, подключить');
 }
 
-// Creates the coach's account (no email or password: the address is internal and never mailed) and links the chat.
-async function register(chatId: number, from: any): Promise<string> {
-  const again = await coachByChat(chatId);
-  if (again) return again.owner;
-  const { data, error } = await admin.auth.admin.createUser({
-    email: `tg${chatId}@users.dorozhka.example`,
-    email_confirm: true,
-    user_metadata: { telegram_id: chatId, name: [from?.first_name, from?.last_name].filter(Boolean).join(' '), username: from?.username ?? null },
-  });
-  if (error || !data?.user) throw new Error(error?.message || 'Не удалось создать аккаунт');
-  const { error: e2 } = await admin.from('telegram_links').insert({ owner: data.user.id, chat_id: chatId });
-  if (e2) { await admin.auth.admin.deleteUser(data.user.id).catch(() => {}); throw new Error(e2.message); }
-  return data.user.id;
-}
-
-async function loginAnswer(bot: Bot, q: any, coach: Coach | null) {
+async function linkAnswer(bot: Bot, q: any, coach: Coach | null) {
   const [act, nonce, ans] = String(q.data).split('|');
   const chatId = q.message.chat.id;
-  let text = 'Вход отклонён. Если это были не вы — ничего делать не нужно.';
-  if (ans === 'y') {
-    if (!(await openRequest(nonce))) text = STALE;
-    else if (act === 'login' && coach) text = (await approve(nonce, coach.owner)) ? 'Вход подтверждён — вернитесь в браузер.' : STALE;
-    else if (act === 'reg') {
-      const owner = await register(chatId, q.from);
-      text = (await approve(nonce, owner))
-        ? 'Журнал создан, вход подтверждён — вернитесь в браузер.\n\nСюда будут приходить напоминания о занятиях, сводка дня в 7:00 и кнопки отметки посещения. Клиентам бот ничего не пишет.'
-        : STALE;
+  let text = 'Отменено. Если ссылку прислал кто-то другой — ничего делать не нужно.';
+  const r = ans === 'y' ? await openRequest(nonce) : null;
+  if (ans !== 'y') await admin.from('link_requests').delete().eq('nonce', nonce).is('used_at', null);
+  else if (!r || !(await claim(nonce))) text = STALE;
+  else if (act === 'link') {
+    if (coach && coach.owner !== r.owner) text = 'Этот чат уже подключён к другому журналу.';
+    else {
+      // A journal moves to another chat: the row keeps its other settings (receipts_report).
+      const { error } = await admin.from('telegram_links').upsert({ owner: r.owner, chat_id: chatId, blocked_at: null }, { onConflict: 'owner' });
+      text = error ? `Не получилось подключить: ${error.message}` : `Готово, Telegram подключён — вернитесь в браузер.\n\n${DONE}`;
     }
-  } else {
-    await admin.from('login_requests').delete().eq('nonce', nonce).is('approved_at', null);
+  } else if (act === 'move') {
+    if (!coach || !isLegacy(await emailOf(coach.owner)) || !isEmpty(await stateOf(r.owner))) text = 'Перенести журнал не получилось: данные изменились. Нажмите «Подключить Telegram» ещё раз.';
+    else {
+      const { error } = await admin.rpc('merge_into_legacy', { p_old: coach.owner, p_new: r.owner });
+      text = error
+        ? `Перенести журнал не получилось: ${error.message}`
+        : `Журнал перенесён в аккаунт ${await emailOf(coach.owner)}. Вернитесь в браузер и войдите через Google ещё раз.\n\n${DONE}`;
+      if (error) console.error(`telegram merge: ${error.message}`);
+    }
   }
   await tg(bot.token, 'editMessageText', { chat_id: chatId, message_id: q.message.message_id, text }).catch(() => {});
   await tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id }).catch(() => {});
 }
 
-const WELCOME = 'Это бот «Дорожки» — журнала тренера по плаванию.\n\nЧтобы создать свой журнал, откройте dorozhka.vercel.app и нажмите «Начать через Telegram». Если на компьютере нет Telegram, отправьте сюда код из 6 цифр с экрана входа.';
+// Buttons from before the Google login (sign in through the bot, «Это не я — завершить все сеансы»).
+async function oldButton(bot: Bot, q: any) {
+  await tg(bot.token, 'answerCallbackQuery', {
+    callback_query_id: q.id, show_alert: true,
+    text: 'Кнопка устарела: вход теперь через Google. Выйти на всех устройствах можно в настройках журнала.',
+  }).catch(() => {});
+}
+
+const WELCOME = 'Это бот «Дорожки» — журнала тренера по плаванию.\n\nЧтобы получать здесь напоминания, откройте dorozhka.vercel.app, войдите через Google и в разделе «Ещё» нажмите «Подключить Telegram».\n\nВходили раньше через этого бота? Сделайте то же самое: бот предложит перенести старый журнал в ваш аккаунт Google.';
 
 async function webhook(secret: string, update: any) {
   const bot = await getBot();
@@ -310,8 +269,8 @@ async function webhook(secret: string, update: any) {
   // The coach writes or presses a button again after blocking the bot: reminders resume.
   if (coach?.blocked_at) await admin.from('telegram_links').update({ blocked_at: null }).eq('owner', coach.owner);
   if (q) {
-    if (/^(login|reg)\|/.test(String(q.data))) return loginAnswer(bot, q, coach);
-    if (String(q.data) === 'sout|all') return signOutAnswer(bot, q, coach);
+    if (/^(link|move)\|/.test(String(q.data))) return linkAnswer(bot, q, coach);
+    if (/^(login|reg|sout)\|/.test(String(q.data))) return oldButton(bot, q);
     if (!coach) return tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id }).catch(() => {});
     // Bump the version so an open app sees the change and reloads instead of overwriting it.
     const { data: row } = await admin.from('app_state').select('data, version').eq('owner', coach.owner).maybeSingle();
@@ -325,23 +284,8 @@ async function webhook(secret: string, update: any) {
     return;
   }
   if (!m?.text) return;
-  const login = m.text.match(/^\/start login_([a-f0-9]{32})$/);
-  if (login) return loginAsk(bot, chat.id, login[1], coach);
-  // The code from the login screen, typed here (when the link cannot open Telegram): asks the same question.
-  const typed = m.text.replace(/\s/g, '');
-  if (/^\d{6}$/.test(typed)) {
-    // At most CODE_TRIES wrong codes per chat in 10 minutes, so a code can't be guessed by trying them all.
-    const { count: wrong } = await admin.from('login_code_failures').select('chat_id', { count: 'exact', head: true }).eq('chat_id', chat.id).gt('at', fresh());
-    if ((wrong ?? 0) >= CODE_TRIES) return tg(bot.token, 'sendMessage', { chat_id: chat.id, text: 'Слишком много неверных кодов. Подождите 10 минут и нажмите «Новый код» на сайте.' });
-    const { data: r } = await admin.from('login_requests').select('nonce').eq('code', typed).is('approved_at', null)
-      .gt('created_at', fresh()).order('created_at', { ascending: false }).limit(1).maybeSingle();
-    if (!r) {
-      await admin.from('login_code_failures').delete().lt('at', new Date(Date.now() - 864e5).toISOString());
-      await admin.from('login_code_failures').insert({ chat_id: chat.id });
-    }
-    if (!r) return tg(bot.token, 'sendMessage', { chat_id: chat.id, text: 'Такого кода нет или он устарел. Нажмите «Новый код» на сайте и отправьте его сюда.' });
-    return loginAsk(bot, chat.id, r.nonce, coach);
-  }
+  const link = m.text.match(/^\/start link_([a-f0-9]{32})$/);
+  if (link) return linkAsk(bot, chat.id, link[1], coach);
   if (!coach) return tg(bot.token, 'sendMessage', { chat_id: chat.id, text: WELCOME });
   const S = await stateOf(coach.owner);
   if (m.text.startsWith('/start')) await tg(bot.token, 'sendMessage', { chat_id: chat.id, text: startText(S, { receipts: !!coach.receipts_report }) });
@@ -369,12 +313,8 @@ Deno.serve(async (req) => {
       catch (e) { console.error(`telegram webhook: ${(e as Error).message}`); }
       return json({ ok: true });
     }
-    if (path === '/login/start') return await loginStart(req);
-    if (path === '/login/poll') {
-      const { nonce } = await req.json().catch(() => ({}));
-      if (!/^[a-f0-9]{32}$/.test(String(nonce ?? ''))) return json({ error: 'bad request' }, 400);
-      return await loginPoll(nonce);
-    }
+    // The login through the bot is gone (coaches sign in with Google): an old page gets a clear answer.
+    if (path.startsWith('/login/')) return json({ error: 'Вход теперь через Google. Обновите страницу.' }, 410);
 
     const jwt = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '');
     const { data: auth } = await admin.auth.getUser(jwt);
@@ -385,6 +325,13 @@ Deno.serve(async (req) => {
     const bot = await getBot();
 
     if (path === '/status') return json(status(link, bot));
+    if (path === '/link') return await linkStart(req, user.id);
+    // The chat is forgotten, the row with the journal's other settings stays.
+    if (path === '/unlink') {
+      const { error } = await admin.from('telegram_links').update({ chat_id: null, blocked_at: null }).eq('owner', user.id);
+      if (error) throw new Error(error.message);
+      return json(status(null, bot));
+    }
 
     if (path === '/test') {
       if (!link?.chat_id) return json({ error: `Откройте @${bot.bot_name} и нажмите Start` }, 400);
