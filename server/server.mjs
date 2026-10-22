@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { DEFAULT_TZ, applyAttendance, attendanceView, dueMessages, dayText, forgetPhotos, nextText, photoForms, receiptsReport, receiptsSoFar, startText, textChunks, wallNow } from '../shared/schedule.mjs';
+import { DEFAULT_TZ, applyAttendance, attendanceView, dayKey as wallDay, dueMessages, dayText, expirePhotos, forgetPhotos, nextText, photoForms, receiptsReport, receiptsSoFar, startText, textChunks, wallNow } from '../shared/schedule.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT) || 4318;
@@ -90,7 +90,19 @@ async function deliver(key, text, extra = {}) {
   try { await tg('sendMessage', { chat_id: tgRow().chat_id, text, ...extra }); console.log(`[telegram] ${key}`); }
   catch (e) { unmarkSent(key); console.error(`[telegram] ${key}: ${e.message}`); }
 }
+// Sent keys are needed only while a message can still be due (within a day); monthly receipts keys stay a year.
+let cleanedAt = 0;
+function cleanSent() {
+  if (Date.now() - cleanedAt < 3600000) return;
+  cleanedAt = Date.now();
+  const ago = (days) => new Date(Date.now() - days * 864e5).toISOString();
+  db.prepare("DELETE FROM sent WHERE (key NOT LIKE 'receipts:%' AND at < ?) OR at < ?").run(ago(3), ago(400));
+  // Receipt photos are kept a year after the payment, as in the cloud.
+  const { version, state } = readState();
+  if (state && expirePhotos(state, wallDay(wnow(state))).n) writeState(state, version);
+}
 async function tick() {
+  cleanSent();
   const t = tgRow();
   if (!t.token || !t.chat_id) return;
   const { state: S } = readState();
@@ -173,7 +185,9 @@ setInterval(checkTokenFile, 3000);
 
 /* ---------- http ---------- */
 function page() {
-  const body = fs.readFileSync(path.join(root, 'dorozhka.html'), 'utf8');
+  // The shared business logic is put into the page, as in the cloud build.
+  const logic = fs.readFileSync(path.join(root, 'shared', 'logic.js'), 'utf8');
+  const body = fs.readFileSync(path.join(root, 'dorozhka.html'), 'utf8').replace('<script src="shared/logic.js"></script>', () => `<script>${logic}</script>`);
   return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style></head><body>${body}</body></html>`;
 }
 function readBody(req, limit = 30 * 1024 * 1024) {
@@ -184,9 +198,21 @@ function readBody(req, limit = 30 * 1024 * 1024) {
     req.on('error', reject);
   });
 }
+// Only this machine's own page may use the server. The Host check stops DNS rebinding (a foreign site whose name
+// points at 127.0.0.1); for writes, a JSON content type forces a CORS preflight that we never answer, and the
+// Origin, when the browser sends one, must be ours. Anything else gets 403.
+const LOCAL = new Set(['localhost', '127.0.0.1', '[::1]', ...(HOST === '0.0.0.0' || HOST === '::' ? [] : [HOST])].map((h) => `${h}:${PORT}`));
+function trusted(req) {
+  if (!LOCAL.has(String(req.headers.host || '').toLowerCase())) return false;
+  if (req.method === 'GET' || req.method === 'HEAD') return true;
+  const origin = req.headers.origin;
+  if (origin !== undefined && !LOCAL.has(origin.toLowerCase().replace(/^http:\/\//, ''))) return false;
+  return /^application\/json\s*(;|$)/i.test(String(req.headers['content-type'] || ''));
+}
 const json = (res, code, data) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(data)); };
 
 const server = http.createServer(async (req, res) => {
+  if (!trusted(req)) return json(res, 403, { error: 'Запрос не с этого компьютера' });
   const url = new URL(req.url, `http://${req.headers.host}`);
   try {
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {

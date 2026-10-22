@@ -343,6 +343,7 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
 <section class="sheet" id="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="sheet-title"></section>
 <div class="toasts" id="toasts" aria-live="polite"></div>
 
+<script src="shared/logic.js"></script>
 <script>
 /* ---------- constants ---------- */
 const TYPES={baby:{label:'Грудничковое'},individual:{label:'Индивидуальное'},split:{label:'Сплит'},minigroup:{label:'Мини-группа'},group:{label:'Групповое'}};
@@ -400,6 +401,8 @@ const ICON={
 const ic=n=>`<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICON[n]}</svg>`;
 
 /* ---------- utils ---------- */
+// Business rules shared with the bot and the laptop server (shared/logic.js): the one copy of them.
+const L=window.DorozhkaLogic;
 const pad=n=>String(n).padStart(2,'0');
 const iso=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 const pdate=s=>{const [y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d)};
@@ -522,8 +525,9 @@ function persist(){if(SERVER.on){SERVER.dirty=true;clearTimeout(SERVER.timer);SE
 const REAL=()=>!!(CLOUD||SERVER.on);
 // The monthly receipts report is the service owner's own feature: the cloud says who has it; the laptop server is the owner's.
 const hasReceipts=()=>CLOUD?!!UI.tg?.receipts:SERVER.on;
-const SERVER={on:false,version:0,timer:null,dirty:false,offline:false};
-const UI={tg:null,view:'today',week:0,selDay:null,cFilter:'all',cQuery:'',pQuery:'',period:'month',rType:'all',pendingImg:null,openSheet:null};
+// base: the state as the server last confirmed it, so a version conflict can merge instead of dropping the coach's edits.
+const SERVER={on:false,version:0,base:null,timer:null,dirty:false,offline:false,merges:0};
+const UI={uid:null,tg:null,view:'today',week:0,selDay:null,cFilter:'all',cQuery:'',pQuery:'',period:'month',rType:'all',pendingImg:null,openSheet:null};
 
 const client=id=>S.clients.find(c=>c.id===id);
 const group=id=>S.groups.find(g=>g.id===id);
@@ -537,39 +541,27 @@ const pkgs=t=>[t.one?[1,'Разовое']:null,t.p8?[8,'8 занятий']:null,
 const tariffOptions=sel=>Object.entries(TYPES).map(([k,v])=>{const ts=S.prices.filter(t=>t.type===k);return ts.length?`<optgroup label="${v.label}">${ts.map(t=>`<option value="${t.id}" ${t.id===sel?'selected':''}>${esc(t.label)}</option>`).join('')}</optgroup>`:''}).join('');
 const trialOnly=cs=>cs.upcoming.length>0&&cs.upcoming.every(s=>s.kind==='trial');
 const bTitle=s=>(s.kind?SKIND[s.kind]+' · ':'')+sTitle(s);
-// A trial session is paid separately or free, never taken from a package.
-function charged(s,cid){if(s.kind==='trial')return false;const a=s.att?.[cid];return a==='present'||(a==='absent'&&S.settings.chargeNoShow)}
-// c.pause is the current or next pause; finished parts move to c.pauses so old sessions stay paused.
-const pausesOf=c=>[...(c?.pauses||[]),...(c?.pause?[c.pause]:[])];
-const pauseAt=(c,date)=>pausesOf(c).find(p=>p.from<=date&&date<=p.to);
-const isPausedC=(c,date)=>!!pauseAt(c,date);
+// Rules from shared/logic.js: what is charged (a trial never is), pauses (finished parts move to c.pauses).
+const charged=(s,cid)=>L.charged(S,s,cid);
+const {pausesOf,pauseAt}=L,isPausedC=L.isPaused;
 function archivePause(c){const y=iso(addDays(new Date(),-1));
   if(c.pause&&c.pause.from<=y)c.pauses=(c.pauses||[]).concat({from:c.pause.from,to:c.pause.to<y?c.pause.to:y});delete c.pause}
 const activeIds=s=>s.clientIds.filter(id=>s.att?.[id]||!isPausedC(client(id),s.date));
 function sStatus(s){const now=new Date();if(s.cancelled)return 'cancelled';if(!activeIds(s).length)return 'paused';if(startDT(s)<=now&&endDT(s)>=now)return 'live';
   if(endDT(s)<now)return activeIds(s).every(c=>s.att[c])?'done':'unmarked';return 'planned'}
-/* Charged sessions are taken from the oldest payment first; a payment with a term only covers sessions up to its end date, and what is left after it ends is burned. */
+/* The package balance (oldest payment first, terms of old payments) is L.balance; here the visits and upcoming sessions. */
 function clientStats(cid){
-  const now=new Date(),today=iso(now);let present=0,absent=0,excused=0;const upcoming=[],usedS=[];
+  const now=new Date(),today=iso(now);let present=0,absent=0,excused=0;const upcoming=[];
   const me=client(cid);
   for(const s of S.sessions){if(s.cancelled||!s.clientIds.includes(cid))continue;const a=s.att?.[cid];if(!a&&isPausedC(me,s.date))continue;
-    if(a){a==='present'?present++:a==='absent'?absent++:excused++;if(charged(s,cid))usedS.push(s)}
+    if(a){a==='present'?present++:a==='absent'?absent++:excused++}
     else if(startDT(s)>now)upcoming.push(s)}
-  upcoming.sort(byStart);usedS.sort(byStart);
-  const pays=S.payments.filter(p=>p.clientId===cid||p.with===cid).sort((a,b)=>a.date.localeCompare(b.date)).map(p=>({p,left:p.sessions}));
-  let debt=0;
-  for(const s of usedS){const b=pays.find(x=>x.left>0&&(!x.p.until||s.date<=x.p.until));if(b)b.left--;else debt++}
-  const active=pays.filter(x=>!x.p.until||x.p.until>=today);
-  const burned=pays.filter(x=>x.p.until&&x.p.until<today).reduce((t,x)=>t+x.left,0);
-  const paid=pays.reduce((t,x)=>t+x.p.sessions,0);
-  const aPaid=active.reduce((t,x)=>t+x.p.sessions,0);
-  const remaining=active.reduce((t,x)=>t+x.left,0)-debt;
-  const aUsed=aPaid-Math.max(0,remaining);
-  const until=active.filter(x=>x.left>0&&x.p.until).map(x=>x.p.until).sort()[0]||null;
+  upcoming.sort(byStart);
+  const {paid,aPaid,aUsed,used,remaining,burned,until}=L.balance(S,cid,today);
   const paidUp=upcoming.filter(s=>s.kind!=='trial'),lastCovered=remaining>0&&paidUp.length?paidUp[Math.min(remaining,paidUp.length)-1]:null;
   const firstUnpaid=remaining>=0?paidUp[remaining]:paidUp[0];
   const lv=remaining<=0?'bad':remaining<=2?'warn':'ok';
-  return {paid,aPaid,aUsed,debt:Math.max(0,-remaining),used:usedS.length,present,absent,excused,remaining,burned,until,upcoming,lastCovered,firstUnpaid,lv};
+  return {paid,aPaid,aUsed,debt:Math.max(0,-remaining),used,present,absent,excused,remaining,burned,until,upcoming,lastCovered,firstUnpaid,lv};
 }
 function remLabel(cs){return cs.remaining<0?`долг ${-cs.remaining} ${plural(-cs.remaining,'занятие','занятия','занятий')}`:cs.remaining===0?'абонемент закончился':`осталось ${cs.remaining} из ${cs.aPaid}${cs.until?`, до ${fdateS(cs.until)}`:''}`}
 // Dates for exactly n sessions on the chosen weekdays (0 = Monday) from `from` on, skipping the coach's days off. The series stops at n and is never extended.
@@ -615,21 +607,8 @@ function suggestSets(c,p,ignore){const dur=durFor(clientType(c)),days=workHours(
     const times=common.length?cb.map(()=>near(common)):free.map(near);
     sets.push({slots:Object.fromEntries(cb.map((d,i)=>[d,fromMin(times[i])])),same:common.length?1:0,spread:spread>1?1:0,dist:times.reduce((a,x)=>a+Math.abs(x-pref),0)/k})}
   return sets.sort((a,b)=>b.same-a.same||b.spread-a.spread||a.dist-b.dist).slice(0,5)}
-/* Everyone at a session warned they would miss it: nothing is charged, so the series gets one more session at its end —
-   a make-up on the client's next plan day that is free. Undoing the mark removes it while it is still unmarked.
-   Group sessions are left alone: the group keeps its own schedule. The same rule is in shared/schedule.mjs (syncMakeup) for the bot. */
-function syncMakeup(s){if(s.groupId||s.kind==='trial'||s.cancelled)return null;
-  const ids=s.clientIds.filter(id=>s.att?.[id]||!isPausedC(client(id),s.date)),want=ids.length>0&&ids.every(id=>s.att[id]==='excused'),ext=S.sessions.find(x=>x.extOf===s.id);
-  if(!want){if(ext&&!Object.keys(ext.att||{}).length)S.sessions=S.sessions.filter(x=>x!==ext);return null}
-  if(ext)return ext;
-  const key=[...s.clientIds].sort().join(','),last=S.sessions.filter(x=>!x.groupId&&!x.cancelled&&[...x.clientIds].sort().join(',')===key).reduce((a,x)=>x.date>a?x.date:a,s.date);
-  const pl=client(s.clientIds[0])?.plan,slots=pl?.slots&&Object.keys(pl.slots).length?pl.slots:pl?.days?Object.fromEntries(pl.days.map(d=>[d,pl.time])):{[wd(pdate(s.date))]:s.start};
-  const g=gapMin(),busy=(date,start)=>{const a=toMin(start),b=a+s.dur;return S.sessions.some(x=>x.date===date&&!x.cancelled&&a<toMin(x.start)+x.dur+g&&b>toMin(x.start)-g)};
-  let pick=null,first=null;for(let i=1;i<=120&&!pick;i++){const d=addDays(pdate(last),i),day=iso(d),start=slots[wd(d)];
-    if(!start||(S.vacations||[]).some(v=>v.from<=day&&day<=v.to))continue;first=first||{day,start};if(!busy(day,start))pick={day,start}}
-  pick=pick||first;if(!pick)return null;
-  const add={id:uid('s'),date:pick.day,start:pick.start,dur:s.dur,type:s.type,kind:'makeup',groupId:null,clientIds:[...s.clientIds],place:s.place||'',att:{},log:'',next:'',cancelled:false,extOf:s.id};
-  S.sessions.push(add);S.sessions.sort(byStart);return add}
+// Everyone warned they would miss it: one make-up at the end of the series (L.syncMakeup, the rule is described there).
+const syncMakeup=s=>L.syncMakeup(S,s);
 function planConflicts(c,p,ignore){const dur=durFor(clientType(c));return planSlots(p.from,p.slots,p.n).map(x=>({...x,s:clash(x.date,x.time,dur,ignore)})).filter(x=>x.s)}
 function planWarn(c,p){const cf=planConflicts(c,p,planIgnore(c.id));if(!cf.length)return '';
   return `Занято: ${cf.slice(0,3).map(x=>`${DAY[wd(pdate(x.date))]} ${fdateS(x.date)} ${x.time} — ${esc(shortTitle(x.s))}`).join('; ')}${cf.length>3?` и ещё ${cf.length-3}`:''}. Поставить всё равно можно.`}
@@ -657,11 +636,8 @@ function readPlan(){const g=id=>document.getElementById(id),slots={};document.qu
   return {n:Math.min(60,Math.max(0,Math.floor(+g('pl-n').value||0))),perWeek:Math.min(6,Math.max(1,Math.floor(+g('pl-week').value||1))),from:g('pl-from').value,slots}}
 function planRefresh(){const el=document.getElementById('pl-box');if(!el)return;const c=client(el.dataset.cid),p=readPlan();
   document.getElementById('pl-info').textContent=planInfo(p);document.getElementById('pl-warn').innerHTML=planWarn(c,p)}
-function prevNote(s){
-  const t=startDT(s);
-  const same=x=>s.groupId?x.groupId===s.groupId:(!x.groupId&&x.clientIds[0]===s.clientIds[0]);
-  return S.sessions.filter(x=>x.id!==s.id&&same(x)&&startDT(x)<t&&x.next).sort(byStart).pop()||null;
-}
+// The previous session of the same client or group with a note for the next time.
+const prevNote=s=>L.prevSession(S,s);
 
 /* ---------- shell ---------- */
 function renderNav(){
@@ -671,7 +647,8 @@ function renderNav(){
   document.getElementById('top-title').textContent=VIEWS.find(v=>v[0]===UI.view)[1];
 }
 function render(){renderNav();document.getElementById('main').innerHTML=({today:vToday,schedule:vSchedule,clients:vClients,payments:vPayments,reports:vReports,plan:vPlan})[UI.view]();
-  if(UI.view==='schedule'){const w=document.querySelector('.wgrid-wrap');const n=document.querySelector('.nowline')||document.querySelector('.blk');if(w&&n)w.scrollTop=0}}
+  if(UI.view==='schedule'){const w=document.querySelector('.wgrid-wrap');const n=document.querySelector('.nowline')||document.querySelector('.blk');if(w&&n)w.scrollTop=0}
+  hydratePhotos()}
 function go(v){UI.view=v;try{history.replaceState(null,'','#'+v)}catch(e){}render();window.scrollTo(0,0);if(v==='plan')tgRefresh()}
 
 /* ---------- views ---------- */
@@ -794,7 +771,7 @@ function payList(){
     return !q||(c&&c.name.toLowerCase().includes(q))||(w&&w.name.toLowerCase().includes(q))||(qd.length>2&&digits(p.phone).includes(qd))});
   if(!list.length)return '<div class="empty">Чеков не нашли.</div>';
   return list.map(p=>{const c=client(p.clientId),w=client(p.with),t=tariff(p.tariff);return `<div class="prow">
-    <button class="thumb" data-act="view-receipt" data-id="${p.id}" aria-label="Открыть оплату">${p.img?`<img src="${p.img}" alt="">`:`<span class="small muted">${p.imgSentAt?'в Telegram':'без фото'}</span>`}</button>
+    <button class="thumb" data-act="view-receipt" data-id="${p.id}" aria-label="Открыть оплату">${hasPhoto(p)?photoTag(p,'',''):`<span class="small muted">${p.imgSentAt?'в Telegram':p.imgExpiredAt?'удалено':'без фото'}</span>`}</button>
     <div style="min-width:0"><button class="btn ghost" style="padding:0;font-weight:600;color:var(--ink);white-space:normal;text-align:left" data-act="open-client" data-id="${p.clientId}">${esc(c?.name||'Без клиента')}${w?` + ${esc(w.name.split(' ')[0])}`:''}</button><div class="small muted mono">${esc(p.phone)}</div></div>
     <div class="pmeta small muted">${t?esc(t.label):'Без тарифа'}<br>${fdateS(p.date)} · ${esc(p.method)} · ${p.sessions===1?'разовое':`${p.sessions} ${plural(p.sessions,'занятие','занятия','занятий')}`}${p.until?` · до ${fdateS(p.until)}`:''}</div>
     <div class="amt">${money(p.amount)}</div></div>`}).join('');
@@ -887,7 +864,7 @@ function vPlan(){
     ['Потом','Перенос занятия перетаскиванием в расписании.'],['Потом','Навыки ребёнка: погружение, скольжение, 25 м кролем. Отчёт-открытка для родителей.'],
     ['Потом','Время на 25/50 м с секундомером и график личных рекордов.']];
   const priceRows=Object.entries(TYPES).map(([k,v])=>{const ts=S.prices.filter(t=>t.type===k);if(!ts.length)return '';
-    return `<tr><td colspan="5" class="grp"><span class="chip t-${k}">${v.label}</span></td></tr>`+ts.map(t=>`<tr><td style="white-space:normal">${esc(t.label)}${t.note?`<br><span class="small muted">${t.note}</span>`:''}</td>${['one','p8','p10'].map(f=>`<td class="n"><input class="inp mono pinp" type="number" step="500" min="0" id="pr-${t.id}-${f}" value="${t[f]??''}" placeholder="—" data-price="${t.id}" data-pf="${f}" aria-label="${esc(t.label)}, ${f==='one'?'разовое':f==='p8'?'8 занятий':'10 занятий'}"></td>`).join('')}<td><button class="btn sm ghost danger" data-act="del-tariff" data-id="${t.id}" aria-label="Удалить тариф ${esc(t.label)}">${ic('x')}</button></td></tr>`).join('')}).join('');
+    return `<tr><td colspan="5" class="grp"><span class="chip t-${k}">${v.label}</span></td></tr>`+ts.map(t=>`<tr><td style="white-space:normal">${esc(t.label)}${t.note?`<br><span class="small muted">${esc(t.note)}</span>`:''}</td>${['one','p8','p10'].map(f=>`<td class="n"><input class="inp mono pinp" type="number" step="500" min="0" id="pr-${t.id}-${f}" value="${t[f]??''}" placeholder="—" data-price="${t.id}" data-pf="${f}" aria-label="${esc(t.label)}, ${f==='one'?'разовое':f==='p8'?'8 занятий':'10 занятий'}"></td>`).join('')}<td><button class="btn sm ghost danger" data-act="del-tariff" data-id="${t.id}" aria-label="Удалить тариф ${esc(t.label)}">${ic('x')}</button></td></tr>`).join('')}).join('');
   const addTariff=`<form id="f-tariff" class="sect" style="border-top:1px solid var(--line)" autocomplete="off"><h3>Новый тариф</h3>
     <div class="grid2"><label class="f" for="nt-label">Название<input class="inp" id="nt-label" name="label" placeholder="Например, Подросток, персонально" required></label>
       <label class="f" for="nt-type">Тип занятия<select class="inp" id="nt-type" name="type">${Object.entries(TYPES).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('')}</select></label></div>
@@ -931,7 +908,7 @@ ${hasReceipts()?`<label class="toggle" for="set-receipts"><span><b>Чеки за
 /* ---------- sheets ---------- */
 function openSheet(html,key){const sh=document.getElementById('sheet');const keep=UI.openSheet===key?sh.querySelector('.sheet-b')?.scrollTop:0;
   sh.innerHTML=html;sh.hidden=false;document.getElementById('scrim').hidden=false;UI.openSheet=key;
-  const b=sh.querySelector('.sheet-b');if(b&&keep)b.scrollTop=keep;if(!keep)setTimeout(()=>sh.querySelector('[data-autofocus]')?.focus(),30)}
+  const b=sh.querySelector('.sheet-b');if(b&&keep)b.scrollTop=keep;if(!keep)setTimeout(()=>sh.querySelector('[data-autofocus]')?.focus(),30);hydratePhotos()}
 function closeSheet(){document.getElementById('sheet').hidden=true;document.getElementById('scrim').hidden=true;UI.openSheet=null;UI.pendingImg=null;render()}
 const sheetHead=(title,sub)=>`<div class="sheet-h"><div style="min-width:0"><h2 id="sheet-title">${title}</h2>${sub?`<div class="small muted" style="margin-top:4px">${sub}</div>`:''}</div><button class="btn icon-btn ghost" data-act="close" aria-label="Закрыть">${ic('x')}</button></div>`;
 
@@ -978,7 +955,7 @@ function clientSheet(id){
     <div class="blockt"><label class="f" for="c-note">Заметка о клиенте</label><textarea class="inp" id="c-note" data-cfield="note" data-cid="${id}" placeholder="Особенности, страхи, цели">${esc(c.note)}</textarea></div>
     ${notes.length?`<div class="blockt"><h3>Последние заметки тренера</h3>${notes.map(s=>`<div class="prev-note"><span class="eyebrow">${fdateS(s.date)}</span><span>${esc(s.log)}</span></div>`).join('')}</div>`:''}
     <div class="blockt"><h3>История</h3><ul class="hist">${hist.map(s=>{const a=s.att[id];return `<li><span class="mono small">${fdateS(s.date).replace(/ (\S{3})\S*/,' $1')} ${s.start}</span><span class="small" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${TYPES[s.type].label}</span><span class="chip ${a==='present'?'lv-ok':a==='absent'?'lv-bad':a==='excused'?'lv-warn':'st-unmarked'}">${a?ATT[a]:s.cancelled?'Отменено':'Не отмечено'}</span></li>`}).join('')||'<li class="muted">Занятий ещё не было</li>'}</ul></div>
-    <div class="blockt"><h3>Чеки</h3>${pays.some(p=>p.img)?`<div class="rthumbs">${pays.filter(p=>p.img).map(p=>`<button class="thumb" data-act="view-receipt" data-id="${p.id}" aria-label="Чек от ${fdateS(p.date)}" title="${fdateS(p.date)} · ${money(p.amount)}"><img src="${p.img}" alt=""></button>`).join('')}</div>`:'<p class="muted small">Чеков нет</p>'}</div>
+    <div class="blockt"><h3>Чеки</h3>${pays.some(hasPhoto)?`<div class="rthumbs">${pays.filter(hasPhoto).map(p=>`<button class="thumb" data-act="view-receipt" data-id="${p.id}" aria-label="Чек от ${fdateS(p.date)}" title="${fdateS(p.date)} · ${money(p.amount)}">${photoTag(p,'','')}</button>`).join('')}</div>`:'<p class="muted small">Чеков нет</p>'}</div>
   </div><div class="sheet-f"><button class="btn ghost danger" data-act="del-client" data-id="${id}">Удалить клиента</button><button class="btn primary" data-act="close">Готово</button></div>`,'c:'+id);
 }
 
@@ -1024,7 +1001,7 @@ function newClientSheet(){
   </form>`,'new-c');
 }
 function tariffExtra(t,cid,n){
-  const chips=`<div class="blockt"><span class="f">Пакет</span><div class="chips">${pkgs(t).map(([k,l])=>`<button type="button" class="fchip" data-act="pkg" data-n="${k}" aria-pressed="${k===n}">${l} · ${money(priceFor(t,k))}</button>`).join('')}</div>${t.note?`<span class="small muted">Цена ${t.note}</span>`:''}</div>`;
+  const chips=`<div class="blockt"><span class="f">Пакет</span><div class="chips">${pkgs(t).map(([k,l])=>`<button type="button" class="fchip" data-act="pkg" data-n="${k}" aria-pressed="${k===n}">${l} · ${money(priceFor(t,k))}</button>`).join('')}</div>${t.note?`<span class="small muted">Цена ${esc(t.note)}</span>`:''}</div>`;
   if(!t.pair&&t.id!=='family')return chips;
   const me=client(cid),sib=me?S.clients.filter(x=>x.id!==me.id&&digits(x.phone).slice(-10)===digits(me.phone).slice(-10)):[];
   const def=sib[0]?.id||'';
@@ -1062,7 +1039,7 @@ function matchHTML(p,sel){
   return '';
 }
 function receiptSheet(id){const p=S.payments.find(x=>x.id===id);if(!p)return;const c=client(p.clientId),w=client(p.with),t=tariff(p.tariff);
-  openSheet(`${sheetHead('Чек · '+money(p.amount),`${esc(c?.name||'')}${w?' и '+esc(w.name):''} · <span class="mono">${esc(p.phone)}</span> · ${fdateS(p.date)} · ${esc(p.method)}`)}<div class="sheet-b">${p.img?`<img class="big-receipt" src="${p.img}" alt="Чек оплаты">`:p.imgSentAt?`<p class="muted">Фото чека отправлено вам в Telegram ${fdateS(p.imgSentAt)} в отчёте за месяц и удалено из сервиса, чтобы он не тяжелел.</p>`:'<p class="muted">Фото чека не прикреплено.</p>'}
+  openSheet(`${sheetHead('Чек · '+money(p.amount),`${esc(c?.name||'')}${w?' и '+esc(w.name):''} · <span class="mono">${esc(p.phone)}</span> · ${fdateS(p.date)} · ${esc(p.method)}`)}<div class="sheet-b">${hasPhoto(p)?photoTag(p,'big-receipt','Чек оплаты'):p.imgExpiredAt?`<p class="muted">Фото чека удалено ${fdateS(p.imgExpiredAt)}: фото чеков хранятся год после оплаты.</p>`:p.imgSentAt?`<p class="muted">Фото чека отправлено вам в Telegram ${fdateS(p.imgSentAt)} в отчёте за месяц и удалено из сервиса, чтобы он не тяжелел.</p>`:'<p class="muted">Фото чека не прикреплено.</p>'}
   <p class="small muted">${t?esc(t.label)+' · ':''}${p.sessions===1?'разовое занятие':`+${p.sessions} ${plural(p.sessions,'занятие','занятия','занятий')}${w?' каждому':''}`}${p.until?` · действует до ${fdateS(p.until)}`:''}</p></div>
   <div class="sheet-f"><button class="btn ghost danger" data-act="del-payment" data-id="${p.id}">Удалить чек</button><button class="btn" data-act="open-client" data-id="${p.clientId}">Карточка клиента</button></div>`,'r:'+id)}
 function groupSheet(id,type){
@@ -1202,8 +1179,9 @@ function remindSession(s,now){const st=startDT(s),pn=prevNote(s);
   notify(`${rel(st-now)[0].toUpperCase()+rel(st-now).slice(1)}: ${s.start} · ${esc(shortTitle(s))}`,`${TYPES[s.type].label}, ${esc(s.place)}${pn?`. С прошлого раза: ${esc(pn.next)}`:''}`,s.id)}
 function checkReminders(){
   const now=new Date(),lead=(LEAD[S.settings.remindCoach]||120)*60000,due=[];
-  for(const s of S.sessions){if(s.cancelled||!activeIds(s).length)continue;const st=startDT(s),k=s.id+':'+S.settings.remindCoach;
-    if(now>=st-lead&&now<st&&!notified[k]){markNotified(k);due.push(s)}}
+  for(const s of S.sessions){if(s.cancelled||!activeIds(s).length)continue;const st=startDT(s),k=`${s.id}:${s.date}T${s.start}:${S.settings.remindCoach}`;
+    // The key carries the time, so a moved session is reminded again (keys without it were saved before this rule).
+    if(now>=st-lead&&now<st&&!notified[k]&&!notified[s.id+':'+S.settings.remindCoach]){markNotified(k);due.push(s)}}
   due.sort(byStart);
   if(due.length>2)notify(`Скоро ${due.length} ${plural(due.length,'занятие','занятия','занятий')}`,due.map(s=>`${s.start} ${esc(shortTitle(s))}`).join(', '));
   else due.forEach(s=>remindSession(s,now));
@@ -1277,11 +1255,11 @@ document.addEventListener('click',e=>{
   if(a==='del-session'||a==='del-client'||a==='del-payment'){
     if(!t.dataset.armed){t.dataset.armed='1';t.textContent='Нажмите ещё раз — удалить';return}
     if(a==='del-session')S.sessions=S.sessions.filter(x=>x.id!==t.dataset.id);
-    if(a==='del-client'){const id=t.dataset.id;S.clients=S.clients.filter(x=>x.id!==id);
+    if(a==='del-client'){const id=t.dataset.id;S.clients=S.clients.filter(x=>x.id!==id);dropPhotos(S.payments.filter(p=>p.clientId===id&&!p.with));
       S.payments.forEach(p=>{if(p.with===id)p.with=null;if(p.clientId===id&&p.with){p.clientId=p.with;p.with=null}});S.payments=S.payments.filter(p=>p.clientId!==id);
       S.groups.forEach(g=>g.clientIds=g.clientIds.filter(c=>c!==id));
       S.sessions.forEach(s=>{s.clientIds=s.clientIds.filter(c=>c!==id);delete s.att[id]});S.sessions=S.sessions.filter(s=>s.clientIds.length||s.groupId)}
-    if(a==='del-payment')S.payments=S.payments.filter(x=>x.id!==t.dataset.id);
+    if(a==='del-payment'){dropPhotos(S.payments.filter(x=>x.id===t.dataset.id));S.payments=S.payments.filter(x=>x.id!==t.dataset.id)}
     persist();closeSheet();toast('Удалено','');return}
   if(a==='pkg'){document.getElementById('np-sessions').value=+t.dataset.n;t.parentElement.querySelectorAll('.fchip').forEach(b=>b.setAttribute('aria-pressed',b===t));recalcAmount();return}
   if(a==='pick-phone'){const i=document.getElementById('np-phone');i.value=t.dataset.p;document.getElementById('np-match').innerHTML=matchHTML(i.value);applyPayClient();return}
@@ -1358,7 +1336,7 @@ document.addEventListener('change',e=>{
   if(t.name==='m'&&t.closest('#f-group')){const f=t.closest('form');    document.getElementById('ng-count').textContent=people(f.querySelectorAll('[name="m"]:checked').length)}
   if(t.id==='ob-file'&&t.files[0]){t.files[0].text().then(txt=>{const d=JSON.parse(txt);
       if(!Array.isArray(d.clients)||!Array.isArray(d.sessions)||!Array.isArray(d.payments))throw new Error('bad');
-      S=d;if(!S.prices)S.prices=PRICES.map(x=>({...x}));persist();closeSheet();
+      S=fromImport(d);persist();closeSheet();uploadPhotos();
       toast('Данные перенесены',`${S.clients.length} ${plural(S.clients.length,'клиент','клиента','клиентов')}, ${S.payments.length} ${plural(S.payments.length,'оплата','оплаты','оплат')}`)})
     .catch(()=>toast('Не тот файл','Нужен state-export.json из версии на ноутбуке'));return}
   if(t.id==='np-file'&&t.files[0]){const f=t.files[0];const img=new Image();const url=URL.createObjectURL(f);
@@ -1371,9 +1349,6 @@ document.addEventListener('change',e=>{
 });
 document.addEventListener('submit',e=>{
   e.preventDefault();const f=e.target,fd=new FormData(f);
-  if(f.id==='f-login'){const email=String(fd.get('email')||'').trim(),msg=document.getElementById('lg-msg'),btn=f.querySelector('button');btn.disabled=true;msg.textContent='Отправляю…';
-    sb.auth.signInWithOtp({email,options:{shouldCreateUser:false,emailRedirectTo:location.origin+location.pathname}})
-      .then(({error})=>{btn.disabled=false;msg.textContent=error?(/signup|not allowed|not found/i.test(error.message)?'Эта почта не приглашена в сервис. Проверьте, что ввели ту же почту, что в Supabase.':'Не отправилось: '+error.message):`Ссылка отправлена на ${email}. Откройте письмо на этом устройстве и нажмите на ссылку.`});return}
   if(f.id==='f-session'){
     const type=fd.get('type'),kind=fd.get('kind')||null;let clientIds,groupId=null;
     if(GROUPISH(type)){groupId=fd.get('group');if(!groupId){toast('Нет группы','Сначала создайте группу этого типа');return}clientIds=[...group(groupId).clientIds]}
@@ -1410,14 +1385,42 @@ document.addEventListener('submit',e=>{
     if(w&&w===c.id){toast('Один и тот же клиент','Выберите другого второго участника');return}
     const pd=fd.get('date')||iso(new Date()),term=+fd.get('term');
     const p={id:uid('p'),clientId:c.id,with:w,tariff:t?.id||null,phone:c.phone,date:pd,amount:+fd.get('amount'),sessions:+fd.get('sessions'),method:fd.get('method'),until:term?iso(addDays(pdate(pd),term)):null};
-    p.img=UI.pendingImg||(SERVER.on?null:receiptSVG(p,c.parent?c.parent.split(',')[0]:c.name));S.payments.push(p);persist();
+    p.img=UI.pendingImg||(SERVER.on?null:receiptSVG(p,c.parent?c.parent.split(',')[0]:c.name));S.payments.push(p);persist();uploadPhotos();
     const cs=clientStats(c.id);UI.view='payments';closeSheet();toast('Оплата сохранена',`${esc(c.name)}${w?` и ${esc(client(w).name.split(' ')[0])}`:''}: теперь ${remLabel(cs)}`);return}
 });
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&UI.openSheet)closeSheet()});
 
+/* ---------- receipt photos ---------- */
+// In the cloud a photo is a file in the private Storage bucket «receipts» (p.imgPath = <coach>/<payment>.<ext>),
+// shown through a signed URL. A data URL in p.img (a photo not uploaded yet, older or imported data) is moved there
+// by uploadPhotos(). The laptop server and the demo keep data URLs. Photos are kept a year after the payment.
+const PHOTOS={urls:new Map(),busy:false};
+const hasPhoto=p=>!!(p?.imgPath||p?.img);
+const photoTag=(p,cls,alt)=>`<img${cls?` class="${cls}"`:''} ${p.imgPath?`data-rpath="${esc(p.imgPath)}"`:`src="${esc(p.img)}"`} alt="${esc(alt)}">`;
+async function hydratePhotos(){
+  if(!sb||!document.querySelector('img[data-rpath]:not([src])'))return;
+  const now=Date.now(),need=[...new Set([...document.querySelectorAll('img[data-rpath]:not([src])')].map(e=>e.dataset.rpath))].filter(x=>!(PHOTOS.urls.get(x)?.exp>now));
+  if(need.length){try{const {data}=await sb.storage.from('receipts').createSignedUrls(need,3600);
+    for(const r of data||[])if(r.signedUrl)PHOTOS.urls.set(r.path,{url:r.signedUrl,exp:now+50*60000})}catch(e){}}
+  document.querySelectorAll('img[data-rpath]:not([src])').forEach(e=>{const u=PHOTOS.urls.get(e.dataset.rpath);if(u)e.src=u.url})}
+async function uploadPhotos(){
+  if(!CLOUD||!SERVER.on||!UI.uid||PHOTOS.busy)return;PHOTOS.busy=true;
+  try{for(const id of S.payments.filter(p=>!p.imgPath&&L.hasPhoto(p)).map(p=>p.id)){
+      const p=S.payments.find(x=>x.id===id);if(!p||p.imgPath||!p.img)continue;
+      const blob=L.dataUrlBlob(p.img),path=`${UI.uid}/${p.id}.${blob.type==='image/jpeg'?'jpg':blob.type.split('/')[1]}`;
+      const {error}=await sb.storage.from('receipts').upload(path,blob,{upsert:true,contentType:blob.type});
+      if(error){console.warn('Фото чека не загрузилось:',error.message);break}
+      const q=S.payments.find(x=>x.id===id); // the payment may be deleted while uploading
+      if(!q){dropPhotos([{imgPath:path}]);continue}
+      q.imgPath=path;q.img=null;persist()}}
+  catch(e){console.warn('Фото чека не загрузилось:',e.message)}
+  finally{PHOTOS.busy=false}}
+function dropPhotos(pays){const paths=pays.map(p=>p.imgPath).filter(Boolean);if(sb&&paths.length)sb.storage.from('receipts').remove(paths).catch(()=>{})}
+
 /* ---------- local server (server/server.mjs): data in SQLite, Telegram reminders ---------- */
 async function api(method,url,body){
-  const r=await fetch(url,{method,headers:body?{'content-type':'application/json'}:{},body:body?JSON.stringify(body):undefined,cache:'no-store'});
+  // Every write is JSON, even without a body: the server refuses other content types (CSRF protection).
+  const r=await fetch(url,{method,headers:method==='GET'?{}:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined,cache:'no-store'});
   if(!(r.headers.get('content-type')||'').includes('json')){const e=new Error('Сервер не отвечает');e.status=r.status;throw e}
   const j=await r.json();if(!r.ok){const e=new Error(j.error||('Ошибка '+r.status));e.status=r.status;e.body=j;throw e}return j}
 /* Cloud build (cloud/build.mjs) sets window.DOROZHKA_CLOUD: data in Supabase, login by email link. */
@@ -1430,16 +1433,27 @@ const BE={
     const r=data[0];if(r.is_conflict){const e=new Error('conflict');e.status=409;e.body={version:r.new_version,state:r.current_data};throw e}return {version:r.new_version}},
   async tg(action,body){
     if(!CLOUD){const [m,u]={status:['GET','/api/telegram'],connect:['POST','/api/telegram'],test:['POST','/api/telegram/test'],disconnect:['DELETE','/api/telegram']}[action];return api(m,u,body)}
+    if(action!=='status'&&action!=='test')throw new Error('В облаке бот общий, подключать его не нужно');
     const {data:{session}}=await sb.auth.getSession();
     const r=await fetch(`${CLOUD.url}/functions/v1/telegram/${action}`,{method:'POST',headers:{'content-type':'application/json',apikey:CLOUD.anonKey,authorization:'Bearer '+(session?.access_token||'')},body:JSON.stringify(body||{})});
     const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||('Ошибка '+r.status));return j}
 };
 // A new journal gets the same tariffs with empty prices: the coach writes in their own.
 const emptyState=()=>({v:3,clients:[],groups:[],sessions:[],payments:[],prices:PRICES.map(t=>({...t,one:null,p8:null,p10:null})),settings:{chargeNoShow:true,remindCoach:'2h',morningDigest:true}});
-async function pushState(){clearTimeout(SERVER.timer);SERVER.timer=null;
-  try{const j=await BE.save(SERVER.version,S);SERVER.version=j.version;SERVER.dirty=false;
+// A file from the laptop version may lack newer fields (settings, groups…): they come from a new journal.
+function fromImport(d){const e=emptyState(),tz=S?.settings?.tz;
+  return {...e,...d,groups:Array.isArray(d.groups)?d.groups:[],vacations:Array.isArray(d.vacations)?d.vacations:[],prices:Array.isArray(d.prices)?d.prices:PRICES.map(x=>({...x})),
+    settings:{...e.settings,...(d.settings&&typeof d.settings==='object'?d.settings:{}),...(tz&&!d.settings?.tz?{tz}:{}),onboarded:true}}}
+async function pushState(){clearTimeout(SERVER.timer);SERVER.timer=null;const sent=structuredClone(S);
+  try{const j=await BE.save(SERVER.version,sent);SERVER.version=j.version;SERVER.base=sent;SERVER.dirty=!!SERVER.timer;SERVER.merges=0;
     if(SERVER.offline){SERVER.offline=false;toast('Связь с сервером есть','Изменения сохранены')}}
-  catch(e){if(e.status===409&&e.body?.state){S=e.body.state;SERVER.version=e.body.version;SERVER.dirty=false;render();toast('Данные обновились','Их изменили в другой вкладке, показываю свежую версию')}
+  catch(e){if(e.status===409&&e.body?.state){
+      // Saved meanwhile elsewhere (another device, a Telegram button): put the coach's edits on top of it and save again.
+      const remote=e.body.state;S=L.mergeStates(SERVER.base,S,structuredClone(remote));SERVER.base=remote;SERVER.version=e.body.version;
+      if(!UI.openSheet)render();
+      SERVER.dirty=true;SERVER.timer=setTimeout(pushState,++SERVER.merges>3?5000:0);
+      if(SERVER.merges===1)toast('Данные обновились','Изменения с другого устройства или из Telegram объединены с вашими')}
+    else if(/too large/.test(e.message)){toast('Не удалось сохранить','Журнал стал слишком большим для облака. Удалите лишние фото чеков и попробуйте снова.',{sticky:true})}
     else{if(!SERVER.offline){SERVER.offline=true;toast('Нет связи с сервером','Изменения сохранятся, когда он снова заработает')}SERVER.timer=setTimeout(pushState,5000)}}}
 async function tgRefresh(){if(!SERVER.on)return;try{UI.tg=await BE.tg('status')}catch(e){UI.tg=null}
   if(UI.view==='plan'&&!UI.openSheet&&!document.getElementById('tg-token')?.value)render();
@@ -1449,14 +1463,16 @@ function tgBlock(){
   const t=UI.tg;
   if(!t)return '<p class="small muted">Проверяю Telegram…</p>';
   // Cloud: one shared bot for every coach; the chat was linked when the coach signed up.
-  if(t.shared)return t.chatLinked?`<div class="blockt"><h3>Telegram @${esc(t.botName)} <span class="chip lv-ok">работает</span></h3><p class="small muted">Напоминания, сводка дня и кнопки посещения приходят в ваш чат с ботом круглосуточно, даже когда сервис закрыт. Клиентам бот ничего не пишет. Команды: /today, /next${t.receipts?', /receipts':''}.</p>
+  if(CLOUD&&t.blocked)return `<div class="blockt"><h3>Telegram @${esc(t.botName)} <span class="chip lv-bad">бот заблокирован</span></h3><p class="small muted">Telegram не даёт боту писать вам, поэтому напоминания не приходят. Откройте бота, разблокируйте его и отправьте любое сообщение — напоминания возобновятся.</p><div class="row"><a class="btn primary" href="https://t.me/${esc(t.botName)}" target="_blank" rel="noopener">Открыть @${esc(t.botName)}</a><button class="btn ghost" data-act="tg-refresh">Проверить</button></div></div>`;
+  if(CLOUD)return t.chatLinked?`<div class="blockt"><h3>Telegram @${esc(t.botName)} <span class="chip lv-ok">работает</span></h3><p class="small muted">Напоминания, сводка дня и кнопки посещения приходят в ваш чат с ботом круглосуточно, даже когда сервис закрыт. Клиентам бот ничего не пишет. Команды: /today, /next${t.receipts?', /receipts':''}.</p>
     <div class="row"><button class="btn" data-act="tg-test">Отправить тестовое сообщение</button><a class="btn ghost" href="https://t.me/${esc(t.botName)}" target="_blank" rel="noopener">Открыть @${esc(t.botName)}</a></div></div>`
     :`<div class="blockt"><h3>Telegram @${esc(t.botName)}</h3><p class="small muted">Откройте бота и нажмите «Start», чтобы напоминания приходили вам.</p><div class="row"><a class="btn primary" href="https://t.me/${esc(t.botName)}" target="_blank" rel="noopener">Открыть @${esc(t.botName)}</a><button class="btn ghost" data-act="tg-refresh">Проверить</button></div></div>`;
-  if(!t.connected)return `<div class="blockt"><h3>Напоминания в Telegram</h3><p class="small muted">Откройте в Telegram @BotFather, отправьте /newbot и придумайте имя боту. Он пришлёт токен — вставьте его сюда. ${CLOUD?'Токен хранится в закрытой таблице сервиса, приложение его не показывает.':'Токен хранится только в базе на этом ноутбуке.'}</p>
+  // Laptop server: the coach connects their own bot by its token.
+  if(!t.connected)return `<div class="blockt"><h3>Напоминания в Telegram</h3><p class="small muted">Откройте в Telegram @BotFather, отправьте /newbot и придумайте имя боту. Он пришлёт токен — вставьте его сюда. Токен хранится только в базе на этом ноутбуке.</p>
     <div class="row" style="flex-wrap:nowrap"><input class="inp mono" id="tg-token" type="password" autocomplete="off" placeholder="123456789:AA…" aria-label="Токен бота от BotFather"><button class="btn primary" data-act="tg-connect">Подключить</button></div></div>`;
   if(!t.chatLinked)return `<div class="blockt"><h3>Бот @${esc(t.botName)} подключён</h3><p class="small muted">Остался один шаг: откройте бота в Telegram и нажмите «Start». После этого он будет писать только вам.</p>
     <div class="row"><a class="btn primary" href="https://t.me/${esc(t.botName)}" target="_blank" rel="noopener">Открыть @${esc(t.botName)}</a><button class="btn ghost" data-act="tg-refresh">Проверить</button><button class="btn ghost danger" data-act="tg-off">Отключить</button></div></div>`;
-  return `<div class="blockt"><h3>Telegram @${esc(t.botName)} <span class="chip lv-ok">работает</span></h3><p class="small muted">${CLOUD?'Напоминания и сводка приходят круглосуточно, даже когда сервис закрыт.':'Напоминания и сводка приходят вам в Telegram, пока сервер запущен — даже если эта страница закрыта.'} Команды боту: /today, /next.</p>
+  return `<div class="blockt"><h3>Telegram @${esc(t.botName)} <span class="chip lv-ok">работает</span></h3><p class="small muted">Напоминания и сводка приходят вам в Telegram, пока сервер запущен — даже если эта страница закрыта. Команды боту: /today, /next.</p>
     <div class="row"><button class="btn" data-act="tg-test">Отправить тестовое сообщение</button><button class="btn ghost danger" data-act="tg-off">Отключить</button></div></div>`;
 }
 
@@ -1467,10 +1483,7 @@ function renderLogin(msg){
   document.getElementById('main').innerHTML=`<div class="login card"><div class="rope"></div><div class="sect">
     <h1>Дорожка</h1><p class="muted">Вход и регистрация через Telegram, без почты и паролей. Новый тренер? Бот предложит создать ваш личный журнал.</p>
     <div class="blockt" id="lg-tg"><button class="btn primary" data-act="tg-login">Войти или создать журнал</button></div>
-    <p class="small muted" id="lg-msg" aria-live="polite">${msg||''}</p>
-    <details class="small muted"><summary>Войти по почте</summary>
-      <form id="f-login" class="blockt" autocomplete="on"><label class="f" for="lg-email">Почта<input class="inp" id="lg-email" name="email" type="email" required autocomplete="email"></label>
-        <button class="btn" type="submit">Прислать ссылку для входа</button></form></details></div></div>`;
+    <p class="small muted" id="lg-msg" aria-live="polite">${msg||''}</p></div></div>`;
   let pend=null;try{pend=JSON.parse(sessionStorage.getItem('dz-login')||'null')}catch(e){}
   if(pend&&pend.until>Date.now())tgLoginWait(pend);
 }
@@ -1532,16 +1545,21 @@ async function boot(){
     try{sb=window.supabase.createClient(CLOUD.url,CLOUD.anonKey)}catch(e){renderLogin('Не удалось подключиться к облаку. Проверьте интернет и обновите страницу.');return}
     const {data:{session}}=await sb.auth.getSession();
     if(!session){renderLogin();sb.auth.onAuthStateChange((ev,s)=>{if(s)location.reload()});return}
-    try{const j=await BE.load();SERVER.on=true;SERVER.version=j.version;
+    UI.uid=session.user.id;
+    // «Это не я — завершить все сеансы» in the bot revokes this session too: go back to the login screen.
+    sb.auth.onAuthStateChange(ev=>{if(ev==='SIGNED_OUT')location.reload()});
+    try{const j=await BE.load();SERVER.on=true;SERVER.version=j.version;SERVER.base=structuredClone(j.state);
       if(j.state){S=j.state;if(!S.prices)S.prices=PRICES.map(t=>({...t}))}else S=emptyState();
       // An empty record (the first visit saves the time zone) still offers the import, until the coach starts clean.
       if(!S.clients.length&&!S.sessions.length&&!S.payments.length&&!S.settings?.onboarded)setTimeout(onboardSheet,300);
-      document.querySelector('.side-foot').textContent='Данные в облаке, вход через Telegram.';tgRefresh()}
+      document.querySelector('.side-foot').textContent='Данные в облаке, вход через Telegram.';tgRefresh();
+      // Photos still inside the journal (older data, an import, a photo taken offline) move to Storage.
+      setTimeout(uploadPhotos,1500)}
     catch(e){renderLogin('Не получилось загрузить данные: '+esc(e.message)+'. Обновите страницу.');return}
   }
   else if(/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)){
     try{const j=await api('GET','/api/state');if(typeof j.version!=='number')throw new Error('no server');
-      SERVER.on=true;SERVER.version=j.version;
+      SERVER.on=true;SERVER.version=j.version;SERVER.base=structuredClone(j.state);
       if(j.state){S=j.state;if(!S.prices)S.prices=PRICES.map(t=>({...t}))}else{S=emptyState();await pushState()}
       document.querySelector('.side-foot').textContent='Данные хранятся в базе на этом ноутбуке.';
       tgRefresh()}catch(e){SERVER.on=false}}
@@ -1553,7 +1571,7 @@ async function boot(){
   setTimeout(checkReminders,800);setInterval(checkReminders,20000);
   // Pick up changes made elsewhere (Telegram buttons, another device) while nothing is being edited here.
   if(SERVER.on)setInterval(async()=>{if(SERVER.dirty||SERVER.timer||UI.openSheet||document.hidden)return;
-    try{const j=await BE.load();if(j.version>SERVER.version&&j.state){S=j.state;SERVER.version=j.version;render()}}catch(e){}},15000);
+    try{const j=await BE.load();if(j.version>SERVER.version&&j.state&&!SERVER.dirty&&!SERVER.timer){S=j.state;SERVER.base=structuredClone(j.state);SERVER.version=j.version;render()}}catch(e){}},15000);
 }
 boot();
 </script>

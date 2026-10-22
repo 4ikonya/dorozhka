@@ -1,11 +1,12 @@
 // Telegram for «Дорожка» in the cloud. One function, four kinds of callers:
 //   POST /telegram/tick            — pg_cron every minute (x-cron-secret, checked by the database): sends due reminders
-//   POST /telegram/hook/<secret>   — webhook of the shared bot: sign-in and sign-up, attendance buttons, /today, /next, /receipts (owner only)
+//   POST /telegram/cleanup         — pg_cron daily (same secret): receipt photos older than a year are deleted
+//   POST /telegram/hook            — webhook of the shared bot (secret in X-Telegram-Bot-Api-Secret-Token; the old /hook/<secret> still works): sign-in and sign-up, attendance buttons, /today, /next, /receipts (owner only)
 //   POST /telegram/login/start|poll — the login screen: sign in (or create a journal) by confirming in the bot
 //   POST /telegram/status|test     — the signed-in coach from the app
 // Every coach has their own account and data; the bot tells them apart by their Telegram chat.
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
-import { applyAttendance, attendanceView, dayText, dueMessages, forgetPhotos, nextText, photoForms, receiptsReport, receiptsSoFar, startText, textChunks, wallNow } from '../_shared/schedule.mjs';
+import { applyAttendance, attendanceView, dayKey, dayText, dueMessages, expirePhotos, forgetPhotos, loginPlace, nextText, photoForms, receiptsReport, receiptsSoFar, startText, textChunks, wallNow } from '../_shared/schedule.mjs';
 
 const SB_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -22,7 +23,7 @@ const json = (data: unknown, status = 200) =>
 
 // The shared bot (public.bot) and a coach's link to it: their account and their chat with the bot.
 type Bot = { token: string; bot_name: string; hook_secret: string };
-type Coach = { owner: string; chat_id: number | null; receipts_report?: boolean };
+type Coach = { owner: string; chat_id: number | null; receipts_report?: boolean; blocked_at?: string | null };
 
 let botCache: Bot | null = null;
 async function getBot(): Promise<Bot> {
@@ -32,92 +33,155 @@ async function getBot(): Promise<Bot> {
   return (botCache = data as Bot);
 }
 const coachByChat = async (chatId: number) =>
-  ((await admin.from('telegram_links').select('owner, chat_id, receipts_report').eq('chat_id', chatId).maybeSingle()).data as Coach | null);
+  ((await admin.from('telegram_links').select('owner, chat_id, receipts_report, blocked_at').eq('chat_id', chatId).maybeSingle()).data as Coach | null);
 
 async function tg(token: string, method: string, body: Record<string, unknown> = {}) {
   const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   });
   const out = await res.json().catch(() => ({ ok: false, description: 'Telegram ответил непонятно' }));
-  if (!out.ok) throw new Error(out.description || 'Ошибка Telegram');
+  if (!out.ok) throw Object.assign(new Error(out.description || 'Ошибка Telegram'), { code: out.error_code });
   return out.result;
 }
+// 403 from Telegram: the coach blocked the bot (or deleted the account). Retrying every minute won't help.
+const isBlocked = (e: unknown) => (e as { code?: number }).code === 403;
+// Receipt photos live in a private Storage bucket, under <owner>/<payment id>.<ext>.
+const RECEIPTS = 'receipts';
+type Photo = { id: string; img?: string; path?: string; blob?: Blob; caption: string };
+// Storage photos are downloaded first; one that can't be read is logged and left out of the album.
+async function withBlobs(photos: Photo[]) {
+  const out: Photo[] = [];
+  for (const ph of photos) {
+    if (!ph.path) { out.push(ph); continue; }
+    const { data, error } = await admin.storage.from(RECEIPTS).download(ph.path);
+    if (data) out.push({ ...ph, blob: data }); else console.error(`telegram receipt ${ph.path}: ${error?.message}`);
+  }
+  return out;
+}
 // Long text in parts, then receipt photos as albums of up to 10. A failed album is logged, the rest still go out.
-// Returns the ids of payments whose photo reached the chat.
-async function sendReport(token: string, chatId: number, m: { text: string; photos?: { id: string; img: string; caption: string }[] }) {
+// Returns the photos that reached the chat.
+async function sendReport(token: string, chatId: number, m: { text: string; photos?: Photo[] }) {
   for (const part of textChunks(m.text)) await tg(token, 'sendMessage', { chat_id: chatId, text: part });
-  const sent: string[] = [];
-  for (const { fd, ids } of photoForms(chatId, m.photos || [])) {
+  const photos = await withBlobs(m.photos || []), sent: Photo[] = [];
+  for (const { fd, ids } of photoForms(chatId, photos)) {
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMediaGroup`, { method: 'POST', body: fd });
     const out = await res.json().catch(() => ({ ok: false, description: 'Telegram ответил непонятно' }));
-    if (out.ok) sent.push(...ids); else console.error(`telegram receipts album: ${out.description}`);
+    if (out.ok) sent.push(...photos.filter((ph) => ids.includes(ph.id))); else console.error(`telegram receipts album: ${out.description}`);
   }
   return sent;
 }
-// Drops photos that are now in the chat. Version-checked like every other write, retried if the app saved meanwhile.
-async function dropSentPhotos(owner: string, ids: string[], day: string) {
+// Every write goes through save_state_for, like the app's save_state: version check, shape and size check, daily backup.
+// Returns false when someone saved meanwhile (the caller reads again).
+async function saveState(owner: string, version: number, data: unknown) {
+  const { data: r, error } = await admin.rpc('save_state_for', { p_owner: owner, expected: version, new_data: data });
+  if (error) throw new Error(error.message);
+  return !r?.[0]?.is_conflict;
+}
+// Drops photos that are now in the chat: from the journal (retried if the app saved meanwhile), then from Storage.
+async function dropSentPhotos(owner: string, sent: Photo[], day: string) {
+  const ids = sent.map((ph) => ph.id), paths = sent.flatMap((ph) => (ph.path ? [ph.path] : []));
   for (let i = 0; i < 5 && ids.length; i++) {
     const { data: row } = await admin.from('app_state').select('data, version').eq('owner', owner).maybeSingle();
     if (!row?.data || !forgetPhotos(row.data, ids, day)) return;
-    const { data: saved } = await admin.from('app_state').update({ data: row.data, version: row.version + 1, updated_at: new Date().toISOString() })
-      .eq('owner', owner).eq('version', row.version).select('version');
-    if (saved?.length) return;
+    if (await saveState(owner, row.version, row.data)) return removePhotos(paths);
   }
   console.error('telegram receipts: photos sent but not removed (state kept changing)');
+}
+async function removePhotos(paths: string[]) {
+  for (let i = 0; i < paths.length; i += 100) {
+    const { error } = await admin.storage.from(RECEIPTS).remove(paths.slice(i, i + 100));
+    if (error) console.error(`telegram receipts remove: ${error.message}`);
+  }
+}
+// Daily (pg_cron → /cleanup): receipt photos are kept a year after the payment, then dropped from every journal and Storage.
+async function cleanup() {
+  const { data: rows, error } = await admin.from('app_state').select('owner');
+  if (error) throw new Error(error.message);
+  let photos = 0, failed = 0;
+  for (const { owner } of rows ?? []) {
+    try {
+      for (let i = 0; i < 5; i++) {
+        const { data: row } = await admin.from('app_state').select('data, version').eq('owner', owner).maybeSingle();
+        if (!row?.data) break;
+        const { n, paths } = expirePhotos(row.data, dayKey(nowFor(row.data)));
+        if (!n) break;
+        if (await saveState(owner, row.version, row.data)) { await removePhotos(paths); photos += n; break; }
+      }
+    } catch (e) { failed++; console.error(`telegram cleanup ${String(owner).slice(0, 8)}: ${(e as Error).message}`); }
+  }
+  return { ok: true, photos, failed };
 }
 async function stateOf(owner: string) {
   const { data } = await admin.from('app_state').select('data').eq('owner', owner).maybeSingle();
   return data?.data ?? null;
 }
 const nowFor = (S: any) => wallNow(new Date(), S?.settings?.tz || DEFAULT_TZ);
-const status = (l: Coach | null, bot: Bot) => ({ connected: true, shared: true, chatLinked: !!l?.chat_id, botName: bot.bot_name, receipts: !!l?.receipts_report });
+const status = (l: Coach | null, bot: Bot) => ({ connected: true, shared: true, chatLinked: !!l?.chat_id, botName: bot.bot_name, receipts: !!l?.receipts_report, blocked: !!l?.blocked_at });
 
 async function tick() {
   const bot = await getBot();
-  const { data: links } = await admin.from('telegram_links').select('owner, chat_id, receipts_report').not('chat_id', 'is', null);
-  let sent = 0;
+  // A chat that blocked the bot is skipped until the coach writes to the bot again (see webhook).
+  const { data: links } = await admin.from('telegram_links').select('owner, chat_id, receipts_report').not('chat_id', 'is', null).is('blocked_at', null);
+  let sent = 0, failed = 0;
+  // One coach's broken data or a failed query must not stop the reminders of everybody else.
   for (const l of (links ?? []) as Coach[]) {
-    const S = await stateOf(l.owner);
-    if (!S) continue;
-    const { data: rows } = await admin.from('sent_reminders').select('key').eq('owner', l.owner);
-    const done = new Set((rows ?? []).map((r) => r.key));
-    for (const m of dueMessages(S, nowFor(S), (k: string) => done.has(k), { receipts: !!l.receipts_report })) {
-      // Claim the key first so two overlapping ticks never send the same message.
-      const { error } = await admin.from('sent_reminders').insert({ owner: l.owner, key: m.key });
-      if (error) continue;
-      try {
-        if (m.photos) {
-          const ids = await sendReport(bot.token, l.chat_id as number, m);
-          if (m.purge) await dropSentPhotos(l.owner, ids, m.key.slice(9) + '-20');
-        }
-        else await tg(bot.token, 'sendMessage', { chat_id: l.chat_id, text: m.text, ...(m.reply_markup ? { reply_markup: m.reply_markup } : {}) });
-        sent++;
-      } catch (e) {
-        await admin.from('sent_reminders').delete().eq('owner', l.owner).eq('key', m.key);
-        console.error(`telegram ${m.key}: ${(e as Error).message}`);
+    try { sent += await tickCoach(bot, l); }
+    catch (e) { failed++; console.error(`telegram tick ${l.owner.slice(0, 8)}: ${(e as Error).message}`); }
+  }
+  return { ok: true, sent, failed };
+}
+async function tickCoach(bot: Bot, l: Coach) {
+  let sent = 0;
+  const S = await stateOf(l.owner);
+  if (!S) return 0;
+  // Read only the keys this tick asks about: a dry run collects them, then one query says which were sent.
+  const now = nowFor(S), opts = { receipts: !!l.receipts_report }, asked = new Set<string>();
+  dueMessages(S, now, (k: string) => { asked.add(k); return false; }, opts);
+  if (!asked.size) return 0;
+  const { data: rows } = await admin.from('sent_reminders').select('key').eq('owner', l.owner).in('key', [...asked]);
+  const done = new Set((rows ?? []).map((r) => r.key));
+  for (const m of dueMessages(S, now, (k: string) => done.has(k), opts)) {
+    // Claim the key first so two overlapping ticks never send the same message.
+    const { error } = await admin.from('sent_reminders').insert({ owner: l.owner, key: m.key });
+    if (error) continue;
+    try {
+      if (m.photos) {
+        const sentPhotos = await sendReport(bot.token, l.chat_id as number, m);
+        if (m.purge) await dropSentPhotos(l.owner, sentPhotos, m.key.slice(9) + '-20');
       }
+      else await tg(bot.token, 'sendMessage', { chat_id: l.chat_id, text: m.text, ...(m.reply_markup ? { reply_markup: m.reply_markup } : {}) });
+      sent++;
+    } catch (e) {
+      await admin.from('sent_reminders').delete().eq('owner', l.owner).eq('key', m.key);
+      console.error(`telegram ${m.key}: ${(e as Error).message}`);
+      if (isBlocked(e)) { await admin.from('telegram_links').update({ blocked_at: new Date().toISOString() }).eq('owner', l.owner); break; }
     }
   }
-  return { ok: true, sent };
+  return sent;
 }
 
 /* ---------- login through the bot ---------- */
 const LOGIN_TTL_MIN = 10;
+const CODE_TRIES = 5;
 const fresh = () => new Date(Date.now() - LOGIN_TTL_MIN * 60_000).toISOString();
 
-// Limits are per caller address, so a stranger requesting codes can't lock the coach out.
-const callerIp = (req: Request) => (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || req.headers.get('x-real-ip') || 'unknown';
+// Limits are per caller address, so a stranger requesting codes can't lock the coach out (there is no shared limit
+// any longer: one source could close the login for everybody). Supabase does not document a trusted client-IP header.
+// The platform sits behind Cloudflare, which overwrites cf-connecting-ip with the real address; x-forwarded-for keeps
+// whatever the caller sent in front, and the proxy appends the real address last, so never trust its first entry.
+const callerIp = (req: Request) =>
+  req.headers.get('cf-connecting-ip')?.trim() || (req.headers.get('x-forwarded-for') ?? '').split(',').pop()!.trim() || 'unknown';
 
 async function loginStart(req: Request) {
   const bot = await getBot();
   await admin.from('login_requests').delete().lt('created_at', new Date(Date.now() - 864e5).toISOString());
   const ip = callerIp(req);
   const { count: mine } = await admin.from('login_requests').select('nonce', { count: 'exact', head: true }).eq('ip', ip).gt('created_at', fresh());
-  const { count: all } = await admin.from('login_requests').select('nonce', { count: 'exact', head: true }).gt('created_at', fresh());
-  if ((mine ?? 0) >= 6 || (all ?? 0) >= 300) return json({ error: 'Слишком много попыток входа. Подождите 10 минут.' }, 429);
+  if ((mine ?? 0) >= 6) return json({ error: 'Слишком много попыток входа. Подождите 10 минут.' }, 429);
   const nonce = crypto.randomUUID().replaceAll('-', '');
   const code = String(100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000));
-  const { error } = await admin.from('login_requests').insert({ nonce, code, ip });
+  const ua = (req.headers.get('user-agent') ?? '').slice(0, 400);
+  const { error } = await admin.from('login_requests').insert({ nonce, code, ip, ua });
   if (error) throw new Error(error.message);
   return json({ nonce, code, bot: bot.bot_name, ttl: LOGIN_TTL_MIN * 60 });
 }
@@ -135,16 +199,56 @@ async function loginPoll(nonce: string) {
   // generateLink sends no email; the site verifies the hashed token and gets a normal session.
   const { data: link, error } = await admin.auth.admin.generateLink({ type: 'magiclink', email: u.user.email });
   if (error) throw new Error(error.message);
+  await tellLogin(r).catch((e) => console.error(`telegram login notice: ${(e as Error).message}`));
   return json({ status: 'ok', token_hash: link.properties.hashed_token });
 }
 
+// After every login the coach hears about it, with a button that ends every session if it was not them
+// (someone sent them a login link and they pressed «Да, войти»).
+async function tellLogin(r: { owner: string; ip?: string; ua?: string; created_at: string }) {
+  const { data: l } = await admin.from('telegram_links').select('chat_id').eq('owner', r.owner).maybeSingle();
+  if (!l?.chat_id) return;
+  const bot = await getBot();
+  await tg(bot.token, 'sendMessage', {
+    chat_id: l.chat_id,
+    text: `Выполнен вход в Дорожку: ${loginPlace(r)}.\nЕсли это были не вы, завершите все сеансы: журнал закроется на всех устройствах, и войти можно будет только заново через этого бота.`,
+    reply_markup: { inline_keyboard: [[{ text: 'Это не я — завершить все сеансы', callback_data: 'sout|all' }]] },
+  });
+}
+// supabase-js 2.45 ends sessions only by a user's own JWT: auth.admin.signOut(jwt, 'global') revokes every refresh
+// token of that user. The function has no JWT of the coach, so it signs in as them once (magic link, verified here)
+// and signs that session out globally. Access tokens already issued stay valid until they expire (an hour at most).
+async function signOutEverywhere(owner: string) {
+  const { data: u } = await admin.auth.admin.getUserById(owner);
+  if (!u?.user?.email) throw new Error('Аккаунт тренера не найден');
+  const { data: link, error } = await admin.auth.admin.generateLink({ type: 'magiclink', email: u.user.email });
+  if (error) throw new Error(error.message);
+  const once = createClient(SB_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+  const { data: v, error: e2 } = await once.auth.verifyOtp({ token_hash: link.properties.hashed_token, type: 'magiclink' });
+  if (e2 || !v.session) throw new Error(e2?.message || 'Не удалось завершить сеансы');
+  const { error: e3 } = await admin.auth.admin.signOut(v.session.access_token, 'global');
+  if (e3) throw new Error(e3.message);
+}
+async function signOutAnswer(bot: Bot, q: any, coach: Coach | null) {
+  let text = 'Все сеансы завершены. Журнал закрыт на всех устройствах; войдите заново через «Войти или создать журнал» на сайте.';
+  if (!coach) text = 'Этот чат не связан с журналом.';
+  else {
+    try { await signOutEverywhere(coach.owner); }
+    catch (e) { console.error(`telegram signout: ${(e as Error).message}`); text = 'Не получилось завершить сеансы. Нажмите кнопку ещё раз через минуту.'; }
+  }
+  const failed = text.startsWith('Не получилось');
+  await tg(bot.token, 'editMessageText', { chat_id: q.message.chat.id, message_id: q.message.message_id, text: `${q.message.text ?? ''}\n\n${text}`,
+    ...(failed ? { reply_markup: q.message.reply_markup } : {}) }).catch(() => {});
+  await tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id, text: failed ? 'Ошибка' : 'Сеансы завершены' }).catch(() => {});
+}
+
 const openRequest = async (nonce: string) =>
-  (await admin.from('login_requests').select('nonce, code').eq('nonce', nonce).is('approved_at', null).gt('created_at', fresh()).maybeSingle()).data;
+  (await admin.from('login_requests').select('nonce, code, ip, ua, created_at').eq('nonce', nonce).is('approved_at', null).gt('created_at', fresh()).maybeSingle()).data;
 const approve = async (nonce: string, owner: string) =>
   !!(await admin.from('login_requests').update({ owner, approved_at: new Date().toISOString() })
     .eq('nonce', nonce).is('approved_at', null).gt('created_at', fresh()).select('nonce')).data?.length;
 const STALE = 'Ссылка для входа устарела. Нажмите «Начать через Telegram» на сайте ещё раз.';
-const WARN = 'Нажимайте, только если вы сами сейчас на dorozhka.vercel.app и видите этот код. Если ссылку прислал кто-то другой — нажмите «Это не я».';
+const WARN = 'Нажимайте, только если вы сами сейчас на dorozhka.vercel.app, видите этот код и узнаёте браузер и время. Если ссылку прислал кто-то другой — нажмите «Это не я».';
 
 // A coach signs in; a chat the service has never seen is offered a new, empty journal instead.
 async function loginAsk(bot: Bot, chatId: number, nonce: string, coach: Coach | null) {
@@ -154,7 +258,7 @@ async function loginAsk(bot: Bot, chatId: number, nonce: string, coach: Coach | 
   const intro = coach ? '' : '\nБудет создан ваш личный журнал: клиенты, расписание и оплаты видны только вам, напоминания приходят сюда.\n';
   return tg(bot.token, 'sendMessage', {
     chat_id: chatId,
-    text: `${title}\n${intro}\nКод на экране: ${r.code}\n${WARN}`,
+    text: `${title}\n${intro}\nКод на экране: ${r.code}\nЗапрос: ${loginPlace(r)}\n${WARN}`,
     reply_markup: { inline_keyboard: [[{ text: yes, callback_data: `${act}|${nonce}|y` }, { text: 'Это не я', callback_data: `${act}|${nonce}|n` }]] },
   });
 }
@@ -198,22 +302,23 @@ const WELCOME = 'Это бот «Дорожки» — журнала трене�
 
 async function webhook(secret: string, update: any) {
   const bot = await getBot();
-  if (secret !== bot.hook_secret) return;
+  if (!secret || secret !== bot.hook_secret) return;
   const q = update?.callback_query, m = update?.message;
   const chat = q?.message?.chat ?? m?.chat;
   if (!chat || chat.type !== 'private') return; // only one-to-one chats with a coach
   const coach = await coachByChat(chat.id);
+  // The coach writes or presses a button again after blocking the bot: reminders resume.
+  if (coach?.blocked_at) await admin.from('telegram_links').update({ blocked_at: null }).eq('owner', coach.owner);
   if (q) {
     if (/^(login|reg)\|/.test(String(q.data))) return loginAnswer(bot, q, coach);
+    if (String(q.data) === 'sout|all') return signOutAnswer(bot, q, coach);
     if (!coach) return tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id }).catch(() => {});
     // Bump the version so an open app sees the change and reloads instead of overwriting it.
     const { data: row } = await admin.from('app_state').select('data, version').eq('owner', coach.owner).maybeSingle();
     const S = row?.data;
     const s = S && applyAttendance(S, q.data);
     if (!s) { await tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id, text: 'Это занятие уже удалено' }); return; }
-    const { data: saved } = await admin.from('app_state').update({ data: S, version: row.version + 1, updated_at: new Date().toISOString() })
-      .eq('owner', coach.owner).eq('version', row.version).select('version');
-    if (!saved?.length) { await tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id, text: 'Данные только что изменились, нажмите ещё раз' }); return; }
+    if (!(await saveState(coach.owner, row.version, S))) { await tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id, text: 'Данные только что изменились, нажмите ещё раз' }); return; }
     const view = attendanceView(S, s);
     await tg(bot.token, 'editMessageText', { chat_id: chat.id, message_id: q.message.message_id, text: view.text, reply_markup: view.reply_markup }).catch(() => {});
     await tg(bot.token, 'answerCallbackQuery', { callback_query_id: q.id, text: 'Сохранено' });
@@ -225,8 +330,15 @@ async function webhook(secret: string, update: any) {
   // The code from the login screen, typed here (when the link cannot open Telegram): asks the same question.
   const typed = m.text.replace(/\s/g, '');
   if (/^\d{6}$/.test(typed)) {
+    // At most CODE_TRIES wrong codes per chat in 10 minutes, so a code can't be guessed by trying them all.
+    const { count: wrong } = await admin.from('login_code_failures').select('chat_id', { count: 'exact', head: true }).eq('chat_id', chat.id).gt('at', fresh());
+    if ((wrong ?? 0) >= CODE_TRIES) return tg(bot.token, 'sendMessage', { chat_id: chat.id, text: 'Слишком много неверных кодов. Подождите 10 минут и нажмите «Новый код» на сайте.' });
     const { data: r } = await admin.from('login_requests').select('nonce').eq('code', typed).is('approved_at', null)
       .gt('created_at', fresh()).order('created_at', { ascending: false }).limit(1).maybeSingle();
+    if (!r) {
+      await admin.from('login_code_failures').delete().lt('at', new Date(Date.now() - 864e5).toISOString());
+      await admin.from('login_code_failures').insert({ chat_id: chat.id });
+    }
     if (!r) return tg(bot.token, 'sendMessage', { chat_id: chat.id, text: 'Такого кода нет или он устарел. Нажмите «Новый код» на сайте и отправьте его сюда.' });
     return loginAsk(bot, chat.id, r.nonce, coach);
   }
@@ -243,15 +355,19 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: cors });
   const path = new URL(req.url).pathname.replace(/^.*?\/telegram/, '');
   try {
-    if (path === '/tick') {
+    if (path === '/tick' || path === '/cleanup') {
       const { data: ok } = await admin.rpc('check_cron_secret', { candidate: req.headers.get('x-cron-secret') ?? '' });
       if (ok !== true) return json({ error: 'forbidden' }, 403);
-      return json(await tick());
+      return json(path === '/tick' ? await tick() : await cleanup());
     }
-    const hook = path.match(/^\/hook\/([a-f0-9]{32})$/);
+    // The secret comes in Telegram's X-Telegram-Bot-Api-Secret-Token header (setWebhook secret_token).
+    // The old webhook URL with the secret in the path keeps working until setWebhook is called again.
+    const hook = path.match(/^\/hook(?:\/([a-f0-9]{32}))?$/);
     if (hook) {
-      await webhook(hook[1], await req.json().catch(() => null));
-      return json({ ok: true }); // always 200, or Telegram keeps retrying
+      // Always 200, or Telegram keeps retrying the update: a failure is logged, never answered with 500.
+      try { await webhook(hook[1] ?? req.headers.get('x-telegram-bot-api-secret-token') ?? '', await req.json().catch(() => null)); }
+      catch (e) { console.error(`telegram webhook: ${(e as Error).message}`); }
+      return json({ ok: true });
     }
     if (path === '/login/start') return await loginStart(req);
     if (path === '/login/poll') {
@@ -264,7 +380,7 @@ Deno.serve(async (req) => {
     const { data: auth } = await admin.auth.getUser(jwt);
     const user = auth?.user;
     if (!user) return json({ error: 'Войдите в сервис' }, 401);
-    const { data: cur } = await admin.from('telegram_links').select('owner, chat_id, receipts_report').eq('owner', user.id).maybeSingle();
+    const { data: cur } = await admin.from('telegram_links').select('owner, chat_id, receipts_report, blocked_at').eq('owner', user.id).maybeSingle();
     const link = cur as Coach | null;
     const bot = await getBot();
 

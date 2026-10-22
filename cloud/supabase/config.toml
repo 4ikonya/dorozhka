@@ -3,10 +3,12 @@ project_id = "dorozhka"
 [auth]
 site_url = "https://dorozhka.vercel.app"
 additional_redirect_urls = ["https://dorozhka.vercel.app", "https://dorozhka.vercel.app/"]
-# One coach only: nobody can sign up. The coach is invited once from the Supabase dashboard.
+# Coaches sign up only through the Telegram bot: the telegram function creates the account with the admin API.
+# Nobody can sign up through Supabase Auth directly.
 enable_signup = false
 
-# This switch is the email login itself (magic link), not sign-ups: it must stay on.
+# This switch is the email login itself (magic link), not sign-ups: it must stay on. The site no longer offers
+# a login by email, but the bot login hands the browser a magic-link token (verifyOtp), which needs it.
 [auth.email]
 enable_signup = true
 

@@ -1,0 +1,385 @@
+// Tests for the pure functions in shared/schedule.mjs. Run: npm test
+// Times are wall-clock values in the coach's zone, kept in the UTC fields of a Date (as wallNow returns them).
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { applyAttendance, balance, charged, deviceOf, expirePhotos, forgetPhotos, hasPhoto, merge3, mergeStates, photoForms, receiptsReport, dueMessages, loginPlace, receiptsPeriod, receiptsSoFar, remaining, syncMakeup, textChunks } from '../shared/schedule.mjs';
+
+const at = (iso) => new Date(`${iso}Z`);
+let n = 0;
+const sess = (o) => ({ id: `s${++n}`, date: '2026-10-19', start: '10:00', dur: 45, type: 'individual', kind: null, groupId: null,
+  clientIds: ['c1'], place: 'Дорожка 5', att: {}, log: '', next: '', cancelled: false, ...o });
+const state = (o = {}) => ({
+  clients: [{ id: 'c1', name: 'Аня Петрова', plan: { slots: { 0: '10:00', 2: '10:00' } } }, { id: 'c2', name: 'Борис' }],
+  groups: [], sessions: [], payments: [], vacations: [],
+  settings: { chargeNoShow: true, remindCoach: '2h', morningDigest: true }, ...o,
+});
+const pay = (o) => ({ id: `p${++n}`, clientId: 'c1', with: null, date: '2026-10-01', sessions: 8, amount: 50000, method: 'Kaspi', img: null, ...o });
+const never = () => false;
+const keys = (out) => out.map((m) => m.key);
+
+/* ---------- remaining ---------- */
+test('remaining: оплачено минус списанные занятия', () => {
+  const S = state({
+    payments: [pay({ sessions: 8 }), pay({ sessions: 1, clientId: 'c2', with: 'c1' })],
+    sessions: [
+      sess({ att: { c1: 'present' } }),
+      sess({ att: { c1: 'absent' } }),
+      sess({ att: { c1: 'excused' } }),
+      sess({ att: { c1: 'present' }, kind: 'trial' }),
+      sess({ att: { c1: 'present' }, cancelled: true }),
+      sess(),
+    ],
+  });
+  // 9 paid (8 + the pair payment it shares), present and absent are charged, the rest is not.
+  assert.equal(remaining(S, 'c1'), 7);
+});
+test('remaining: «не предупредил» не списывается, если chargeNoShow выключен', () => {
+  const S = state({ payments: [pay({ sessions: 2 })], sessions: [sess({ att: { c1: 'absent' } })] });
+  assert.equal(remaining(S, 'c1'), 1);
+  S.settings.chargeNoShow = false;
+  assert.equal(remaining(S, 'c1'), 2);
+});
+test('charged: без настройки chargeNoShow «не предупредил» списывается', () => {
+  const S = state({ settings: {} });
+  assert.equal(charged(S, sess({ att: { c1: 'absent' } }), 'c1'), true);
+  assert.equal(charged(S, sess({ att: { c1: 'excused' } }), 'c1'), false);
+  assert.equal(charged(S, sess({ att: { c1: 'present' }, kind: 'trial' }), 'c1'), false);
+  S.settings.chargeNoShow = false;
+  assert.equal(charged(S, sess({ att: { c1: 'absent' } }), 'c1'), false);
+});
+test('balance: срок старой оплаты — занятия после даты не списываются с неё, остаток сгорает', () => {
+  const S = state({
+    payments: [pay({ date: '2026-09-01', sessions: 4, until: '2026-09-30' }), pay({ date: '2026-10-01', sessions: 8 })],
+    sessions: [sess({ date: '2026-09-10', att: { c1: 'present' } }), sess({ date: '2026-10-05', att: { c1: 'present' } })],
+  });
+  // September: 1 of 4 used, 3 burned after the 30th. October's session comes from the new payment.
+  const b = balance(S, 'c1', '2026-10-19');
+  assert.equal(b.remaining, 7);
+  assert.equal(b.burned, 3);
+  assert.equal(b.paid, 12);
+  assert.equal(b.aPaid, 8);
+  assert.equal(b.until, null);
+  // Before the end date the old payment still counts, and its date is shown.
+  const early = balance(S, 'c1', '2026-09-20');
+  assert.equal(early.remaining, 10);
+  assert.equal(early.until, '2026-09-30');
+  assert.equal(remaining(S, 'c1', '2026-10-19'), 7);
+});
+test('remaining: долг уходит в минус', () => {
+  const S = state({ sessions: [sess({ att: { c1: 'present' } })] });
+  assert.equal(remaining(S, 'c1'), -1);
+});
+
+/* ---------- syncMakeup ---------- */
+test('syncMakeup: все предупредили — отработка в ближайший свободный день плана после серии', () => {
+  // Plan: Monday and Wednesday at 10:00. The series ends on Wednesday the 21st.
+  const s = sess({ date: '2026-10-19', att: { c1: 'excused' } });
+  const S = state({ sessions: [s, sess({ date: '2026-10-21' }), sess({ date: '2026-10-26', clientIds: ['c2'] })] });
+  const add = syncMakeup(S, s);
+  // Monday the 26th is taken by another client at the same time, so the next plan day is Wednesday the 28th.
+  assert.equal(add.date, '2026-10-28');
+  assert.equal(add.start, '10:00');
+  assert.equal(add.kind, 'makeup');
+  assert.equal(add.extOf, s.id);
+  assert.equal(syncMakeup(S, s), add, 'повторный вызов не добавляет вторую отработку');
+  assert.equal(S.sessions.filter((x) => x.extOf === s.id).length, 1);
+});
+test('syncMakeup: снятие отметки убирает неотмеченную отработку', () => {
+  const s = sess({ att: { c1: 'excused' } });
+  const S = state({ sessions: [s] });
+  syncMakeup(S, s);
+  s.att = {};
+  assert.equal(syncMakeup(S, s), null);
+  assert.equal(S.sessions.length, 1);
+});
+test('syncMakeup: отмеченная отработка остаётся', () => {
+  const s = sess({ att: { c1: 'excused' } });
+  const S = state({ sessions: [s] });
+  const add = syncMakeup(S, s);
+  add.att = { c1: 'present' };
+  s.att = { c1: 'present' };
+  syncMakeup(S, s);
+  assert.ok(S.sessions.includes(add));
+});
+test('syncMakeup: группы и пробные не продлеваются', () => {
+  const g = sess({ groupId: 'g1', type: 'group', att: { c1: 'excused' } });
+  const t = sess({ kind: 'trial', att: { c1: 'excused' } });
+  const S = state({ sessions: [g, t] });
+  assert.equal(syncMakeup(S, g), null);
+  assert.equal(syncMakeup(S, t), null);
+  assert.equal(S.sessions.length, 2);
+});
+test('syncMakeup: клиент на паузе не мешает отработке, если остальные предупредили', () => {
+  const S = state();
+  S.clients[1].pause = { from: '2026-10-01', to: '2026-10-31' };
+  const s = sess({ type: 'split', clientIds: ['c1', 'c2'], att: { c1: 'excused' } });
+  S.sessions.push(s);
+  assert.ok(syncMakeup(S, s));
+});
+test('syncMakeup: не все предупредили — отработки нет', () => {
+  const s = sess({ type: 'split', clientIds: ['c1', 'c2'], att: { c1: 'excused', c2: 'present' } });
+  const S = state({ sessions: [s] });
+  assert.equal(syncMakeup(S, s), null);
+});
+test('syncMakeup: дни отпуска тренера пропускаются', () => {
+  const s = sess({ date: '2026-10-19', att: { c1: 'excused' } });
+  const S = state({ sessions: [s], vacations: [{ from: '2026-10-20', to: '2026-10-27' }] });
+  assert.equal(syncMakeup(S, s).date, '2026-10-28');
+});
+
+/* ---------- applyAttendance ---------- */
+test('applyAttendance: ставит, переключает и снимает отметку', () => {
+  const s = sess();
+  const S = state({ sessions: [s] });
+  assert.equal(applyAttendance(S, `a|${s.id}|c1|p`), s);
+  assert.equal(s.att.c1, 'present');
+  applyAttendance(S, `a|${s.id}|c1|a`);
+  assert.equal(s.att.c1, 'absent');
+  applyAttendance(S, `a|${s.id}|c1|a`);
+  assert.equal(s.att.c1, undefined);
+});
+test('applyAttendance: «предупредил» добавляет отработку, повторное нажатие убирает', () => {
+  const s = sess();
+  const S = state({ sessions: [s] });
+  applyAttendance(S, `a|${s.id}|c1|e`);
+  assert.equal(S.sessions.filter((x) => x.extOf === s.id).length, 1);
+  applyAttendance(S, `a|${s.id}|c1|e`);
+  assert.equal(S.sessions.filter((x) => x.extOf === s.id).length, 0);
+});
+test('applyAttendance: устаревшие и чужие данные отклоняются', () => {
+  const s = sess();
+  const S = state({ sessions: [s] });
+  assert.equal(applyAttendance(S, 'a|nope|c1|p'), null);
+  assert.equal(applyAttendance(S, `a|${s.id}|c2|p`), null);
+  assert.equal(applyAttendance(S, `a|${s.id}|c1|x`), null);
+  assert.equal(applyAttendance(S, `login|${s.id}|c1|p`), null);
+  assert.deepEqual(s.att, {});
+});
+
+/* ---------- dueMessages ---------- */
+test('dueMessages: напоминание за выбранное время до занятия, один раз', () => {
+  const s = sess({ date: '2026-10-19', start: '10:00' });
+  const S = state({ sessions: [s] });
+  assert.deepEqual(dueMessages(S, at('2026-10-19T07:59'), never).filter((m) => !m.key.startsWith('digest')), []);
+  const out = dueMessages(S, at('2026-10-19T08:00'), never).filter((m) => !m.key.startsWith('digest'));
+  assert.equal(out.length, 1);
+  assert.match(out[0].text, /^Через 2 ч: 10:00 — Аня Петрова/);
+  const sent = new Set(keys(out));
+  assert.deepEqual(dueMessages(S, at('2026-10-19T09:30'), (k) => sent.has(k)).filter((m) => !m.key.startsWith('digest')), []);
+});
+test('dueMessages: перенесённое занятие получает новое напоминание и новые кнопки', () => {
+  const s = sess({ date: '2026-10-19', start: '10:00' });
+  const S = state({ sessions: [s] });
+  const sent = new Set(keys(dueMessages(S, at('2026-10-19T08:30'), never)));
+  s.start = '12:00';
+  const out = dueMessages(S, at('2026-10-19T10:30'), (k) => sent.has(k));
+  assert.equal(out.filter((m) => m.text.startsWith('Через')).length, 1);
+  assert.match(out.find((m) => m.text.startsWith('Через')).text, /12:00/);
+  // Moved after the end, the attendance buttons come again for the new time.
+  s.start = '10:00';
+  dueMessages(S, at('2026-10-19T11:00'), never).forEach((m) => sent.add(m.key));
+  s.date = '2026-10-20';
+  assert.ok(dueMessages(S, at('2026-10-20T11:00'), (k) => sent.has(k)).some((m) => m.reply_markup));
+});
+test('dueMessages: ключи старого формата (без времени) считаются отправленными', () => {
+  const s = sess({ date: '2026-10-19', start: '10:00' });
+  const S = state({ sessions: [s] });
+  const old = new Set([`${s.id}:2h`, `att:${s.id}`, 'digest:2026-10-19']);
+  assert.deepEqual(dueMessages(S, at('2026-10-19T09:00'), (k) => old.has(k)), []);
+  assert.deepEqual(dueMessages(S, at('2026-10-19T11:00'), (k) => old.has(k)), []);
+});
+test('dueMessages: нет напоминаний об отменённых занятиях и занятиях на паузе', () => {
+  const S = state({ sessions: [sess({ cancelled: true }), sess({ clientIds: ['c2'] })] });
+  S.clients[1].pause = { from: '2026-10-19', to: '2026-10-19' };
+  assert.deepEqual(dueMessages(S, at('2026-10-19T09:00'), never).filter((m) => !m.key.startsWith('digest')), []);
+});
+test('dueMessages: кнопки посещения через 10 минут после конца занятия', () => {
+  const s = sess({ start: '10:00', dur: 45 });
+  const S = state({ sessions: [s] });
+  assert.ok(!dueMessages(S, at('2026-10-19T10:54'), never).some((m) => m.reply_markup));
+  const out = dueMessages(S, at('2026-10-19T10:55'), never).filter((m) => m.reply_markup);
+  assert.equal(out.length, 1);
+  assert.match(out[0].text, /Отметьте посещение: 10:00/);
+  assert.equal(out[0].reply_markup.inline_keyboard[0][0].callback_data, `a|${s.id}|c1|p`);
+  // Marked already: no buttons. Turned off: no buttons.
+  s.att = { c1: 'present' };
+  assert.ok(!dueMessages(S, at('2026-10-19T11:00'), never).some((m) => m.reply_markup));
+  s.att = {};
+  S.settings.tgAttendance = false;
+  assert.ok(!dueMessages(S, at('2026-10-19T11:00'), never).some((m) => m.reply_markup));
+});
+test('dueMessages: сводка дня с 7:00 до 12:00, один раз в день', () => {
+  const S = state({ sessions: [sess({ start: '18:00' })], payments: [pay({ sessions: 1 })] });
+  assert.ok(!keys(dueMessages(S, at('2026-10-19T06:59'), never)).includes('digest:2026-10-19'));
+  const d = dueMessages(S, at('2026-10-19T07:00'), never).find((m) => m.key === 'digest:2026-10-19');
+  assert.match(d.text, /^Сводка дня\nПонедельник, 19 октября\n18:00 — Аня Петрова \(Дорожка 5\)/);
+  assert.match(d.text, /Нужна оплата: Аня Петрова \(осталось 1\)/);
+  assert.ok(!keys(dueMessages(S, at('2026-10-19T12:00'), never)).includes('digest:2026-10-19'));
+  assert.ok(!keys(dueMessages(S, at('2026-10-19T08:00'), (k) => k === 'digest:2026-10-19')).includes('digest:2026-10-19'));
+  S.settings.morningDigest = false;
+  assert.ok(!keys(dueMessages(S, at('2026-10-19T07:00'), never)).includes('digest:2026-10-19'));
+});
+test('dueMessages: в 21:00 напоминает о неотмеченных занятиях', () => {
+  const S = state({ sessions: [sess({ start: '10:00' })] });
+  assert.ok(!keys(dueMessages(S, at('2026-10-19T20:59'), never)).includes('attnudge:2026-10-19'));
+  const m = dueMessages(S, at('2026-10-19T21:00'), never).find((x) => x.key === 'attnudge:2026-10-19');
+  assert.match(m.text, /^Не отмечено посещение: 10:00 Аня Петрова/);
+});
+test('dueMessages: в отпуске нет напоминаний и сводки, кнопки посещения остаются', () => {
+  const S = state({ sessions: [sess({ date: '2026-10-19', start: '08:00' }), sess({ date: '2026-10-19', start: '11:00' })],
+    vacations: [{ from: '2026-10-19', to: '2026-10-25' }] });
+  const ks = keys(dueMessages(S, at('2026-10-19T09:00'), never));
+  assert.ok(!ks.some((k) => k.startsWith('digest')));
+  assert.ok(!ks.some((k) => /:2h$/.test(k)));
+  assert.ok(ks.some((k) => k.startsWith('att:')));
+});
+test('dueMessages: отчёт о чеках 20-го с 9:00 только у владельца', () => {
+  const S = state({ payments: [pay({ date: '2026-10-05' })] });
+  assert.ok(!keys(dueMessages(S, at('2026-10-20T09:00'), never)).includes('receipts:2026-10'));
+  assert.ok(!keys(dueMessages(S, at('2026-10-20T08:59'), never, { receipts: true })).includes('receipts:2026-10'));
+  const m = dueMessages(S, at('2026-10-20T09:00'), never, { receipts: true }).find((x) => x.key === 'receipts:2026-10');
+  assert.match(m.text, /^Чеки с 20 сентября по 19 октября\nВсего 1 оплата/);
+  assert.ok(keys(dueMessages(S, at('2026-10-22T03:00'), never, { receipts: true })).includes('receipts:2026-10'));
+  assert.ok(!keys(dueMessages(S, at('2026-10-23T10:00'), never, { receipts: true })).includes('receipts:2026-10'));
+});
+test('dueMessages: битые данные не роняют расчёт', () => {
+  assert.deepEqual(dueMessages(null, at('2026-10-19T09:00'), never), []);
+  assert.deepEqual(dueMessages({ sessions: 'x' }, at('2026-10-19T09:00'), never), []);
+});
+
+/* ---------- receipts periods ---------- */
+test('receiptsPeriod: с 20-го прошлого месяца по 19-е', () => {
+  assert.deepEqual(receiptsPeriod(at('2026-10-20T09:00')), { from: '2026-09-20', to: '2026-10-19' });
+  assert.deepEqual(receiptsPeriod(at('2026-01-20T09:00')), { from: '2025-12-20', to: '2026-01-19' });
+});
+test('receiptsSoFar: с последнего 20-го по сегодня', () => {
+  assert.deepEqual(receiptsSoFar(at('2026-10-19T12:00')), { from: '2026-09-20', to: '2026-10-19' });
+  assert.deepEqual(receiptsSoFar(at('2026-10-20T12:00')), { from: '2026-10-20', to: '2026-10-20' });
+  assert.deepEqual(receiptsSoFar(at('2026-01-05T12:00')), { from: '2025-12-20', to: '2026-01-05' });
+});
+
+/* ---------- textChunks ---------- */
+test('textChunks: режет по строкам, не длиннее предела', () => {
+  assert.deepEqual(textChunks('a\nb\nc', 3), ['a\nb', 'c']);
+  assert.deepEqual(textChunks('коротко'), ['коротко']);
+  const long = Array.from({ length: 500 }, (_, i) => `строка ${i} ${'x'.repeat(20)}`).join('\n');
+  const parts = textChunks(long);
+  assert.ok(parts.length > 1);
+  assert.ok(parts.every((p) => p.length <= 4000));
+  assert.equal(parts.join('\n'), long);
+});
+
+/* ---------- login notices ---------- */
+test('deviceOf: браузер и система из User-Agent', () => {
+  assert.equal(deviceOf('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'), 'Chrome, Windows');
+  assert.equal(deviceOf('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1'), 'Safari, iOS');
+  assert.equal(deviceOf('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0'), 'Edge, macOS');
+  assert.equal(deviceOf('Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 YaBrowser/24.10 Mobile Safari/537.36'), 'Яндекс Браузер, Android');
+  assert.equal(deviceOf('Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0'), 'Firefox, Linux');
+  assert.equal(deviceOf(''), 'неизвестный браузер, неизвестная система');
+});
+test('loginPlace: устройство, IP и время в часовом поясе', () => {
+  const r = { ua: 'Mozilla/5.0 (Windows NT 10.0) Chrome/130.0 Safari/537.36', ip: '203.0.113.7', created_at: '2026-10-21T05:22:00Z' };
+  assert.equal(loginPlace(r), 'Chrome, Windows · IP 203.0.113.7 · 21 октября, 10:22');
+  assert.equal(loginPlace({ created_at: '2026-10-21T05:22:00Z' }, 'UTC'), 'неизвестный браузер, неизвестная система · IP неизвестен · 21 октября, 05:22');
+});
+
+/* ---------- reading only the needed sent keys (the tick's dry run) ---------- */
+test('dueMessages: пробный прогон спрашивает обо всех ключах, которые могут уйти', () => {
+  const S = state({ sessions: [sess({ start: '08:00' }), sess({ start: '10:30' }), sess({ start: '18:00' })], payments: [pay({ date: '2026-10-05' })] });
+  for (const t of ['2026-10-19T07:00', '2026-10-19T09:00', '2026-10-19T21:30', '2026-10-20T09:00']) {
+    const asked = new Set();
+    dueMessages(S, at(t), (k) => { asked.add(k); return false; }, { receipts: true });
+    const out = keys(dueMessages(S, at(t), never, { receipts: true }));
+    assert.ok(out.length > 0);
+    for (const k of out) assert.ok(asked.has(k), `${t}: ${k}`);
+  }
+});
+
+/* ---------- merging after a version conflict ---------- */
+const clone = (x) => JSON.parse(JSON.stringify(x));
+test('mergeStates: заметка тренера и отметка из Telegram на одном занятии сохраняются обе', () => {
+  const s = sess({ date: '2026-10-19' });
+  const base = state({ sessions: [s] });
+  const local = clone(base), remote = clone(base);
+  local.sessions[0].log = 'Хорошо держала дыхание';
+  applyAttendance(remote, `a|${s.id}|c1|p`);
+  const out = mergeStates(base, local, remote);
+  assert.equal(out.sessions[0].log, 'Хорошо держала дыхание');
+  assert.deepEqual(out.sessions[0].att, { c1: 'present' });
+});
+test('merge3: одно и то же поле изменили обе стороны — побеждает тренер', () => {
+  const base = { settings: { remindCoach: '2h', morningDigest: true } };
+  const out = merge3(base, { settings: { remindCoach: '30m', morningDigest: true } }, { settings: { remindCoach: '1d', morningDigest: false } });
+  assert.deepEqual(out, { settings: { remindCoach: '30m', morningDigest: false } });
+});
+test('merge3: новые сущности с обеих сторон, удаления применяются', () => {
+  const base = state({ payments: [pay({ id: 'p1' }), pay({ id: 'p2' }), pay({ id: 'p3' })] });
+  const local = clone(base), remote = clone(base);
+  local.payments.push(pay({ id: 'pL' }));
+  local.payments = local.payments.filter((p) => p.id !== 'p1');
+  remote.payments.push(pay({ id: 'pR' }));
+  remote.payments = remote.payments.filter((p) => p.id !== 'p2');
+  assert.deepEqual(merge3(base, local, remote).payments.map((p) => p.id), ['p3', 'pR', 'pL']);
+});
+test('merge3: удаление не теряет изменения другой стороны', () => {
+  const base = state({ clients: [{ id: 'c1', name: 'Аня' }] });
+  const local = clone(base), remote = clone(base);
+  local.clients = [];
+  remote.clients[0].note = 'новая заметка';
+  assert.deepEqual(merge3(base, local, remote).clients, [{ id: 'c1', name: 'Аня', note: 'новая заметка' }]);
+});
+test('merge3: изменения только одной стороны берутся целиком', () => {
+  const base = state();
+  const remote = clone(base);
+  remote.settings.tz = 'Asia/Almaty';
+  assert.equal(merge3(base, clone(base), remote), remote);
+  const local = clone(base);
+  local.vacations.push({ from: '2026-11-01', to: '2026-11-07' });
+  assert.equal(merge3(base, local, clone(base)), local);
+});
+test('mergeStates: две отработки на одно занятие схлопываются в одну', () => {
+  const s = sess({ date: '2026-10-19' });
+  const base = state({ sessions: [s, sess({ date: '2026-10-21' })] });
+  const local = clone(base), remote = clone(base);
+  applyAttendance(local, `a|${s.id}|c1|e`);
+  applyAttendance(remote, `a|${s.id}|c1|e`);
+  const out = mergeStates(base, local, remote);
+  assert.equal(out.sessions.filter((x) => x.extOf === s.id).length, 1);
+  assert.deepEqual(out.sessions.map((x) => x.date), [...out.sessions.map((x) => x.date)].sort());
+});
+
+/* ---------- receipt photos: Storage paths and data URLs ---------- */
+const JPEG = 'data:image/jpeg;base64,/9j/4AAQ';
+test('receiptsReport: фото из Storage и data URL, без фото — отмечено', () => {
+  const S = state({ payments: [pay({ id: 'p1', date: '2026-10-01', imgPath: 'u1/p1.jpg' }), pay({ id: 'p2', date: '2026-10-02', img: JPEG }), pay({ id: 'p3', date: '2026-10-03' })] });
+  const r = receiptsReport(S, '2026-09-20', '2026-10-19');
+  assert.match(r.text, /фото чеков: 2/);
+  assert.match(r.text, /3\. 3 октября .* · без фото/);
+  assert.deepEqual(r.photos.map((ph) => [ph.id, ph.path || null, ph.img || null]), [['p1', 'u1/p1.jpg', null], ['p2', null, JPEG]]);
+  assert.equal(hasPhoto({ img: 'data:image/svg+xml;base64,AAAA' }), false);
+});
+test('photoForms: принимает Blob и data URL', async () => {
+  const forms = photoForms(7, [{ id: 'p1', blob: new Blob([new Uint8Array([1, 2])], { type: 'image/png' }), caption: 'a' }, { id: 'p2', img: JPEG, caption: 'b' }]);
+  assert.equal(forms.length, 1);
+  assert.deepEqual(forms[0].ids, ['p1', 'p2']);
+  const fd = forms[0].fd;
+  assert.equal(fd.get('f0').type, 'image/png');
+  assert.equal(fd.get('f1').type, 'image/jpeg');
+  assert.equal(JSON.parse(fd.get('media')).length, 2);
+});
+test('forgetPhotos: убирает и data URL, и путь в Storage', () => {
+  const S = state({ payments: [pay({ id: 'p1', imgPath: 'u1/p1.jpg' }), pay({ id: 'p2', img: JPEG }), pay({ id: 'p3', img: JPEG })] });
+  assert.equal(forgetPhotos(S, ['p1', 'p2'], '2026-10-20'), 2);
+  assert.deepEqual(S.payments.map((p) => [p.img ?? null, p.imgPath ?? null, p.imgSentAt ?? null]),
+    [[null, null, '2026-10-20'], [null, null, '2026-10-20'], [JPEG, null, null]]);
+});
+test('expirePhotos: фото оплат старше года удаляются, остальные остаются', () => {
+  const S = state({ payments: [pay({ id: 'old', date: '2025-10-21', imgPath: 'u1/old.jpg' }), pay({ id: 'old2', date: '2025-09-01', img: JPEG }),
+    pay({ id: 'edge', date: '2025-10-22', imgPath: 'u1/edge.jpg' }), pay({ id: 'new', date: '2026-10-01', imgPath: 'u1/new.jpg' })] });
+  const r = expirePhotos(S, '2026-10-22');
+  assert.deepEqual(r, { n: 2, paths: ['u1/old.jpg'] });
+  assert.deepEqual(S.payments.map((p) => p.imgExpiredAt ?? null), ['2026-10-22', '2026-10-22', null, null]);
+  assert.equal(S.payments[2].imgPath, 'u1/edge.jpg');
+  assert.deepEqual(expirePhotos(S, '2026-10-22'), { n: 0, paths: [] });
+});
