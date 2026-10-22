@@ -232,6 +232,8 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
 .login{max-width:420px;margin:8vh auto 0;overflow:hidden}
 .login form .btn{align-self:flex-start}
 .login .btn{min-height:44px}
+.btn.google{background:#fff;color:#1f1f1f;border:1px solid #747775;gap:10px;font-weight:500}
+.btn.google:hover{background:#f8f9fa}
 
 /* plan */
 .prose{max-width:72ch;display:flex;flex-direction:column;gap:12px;line-height:1.6}
@@ -888,7 +890,7 @@ ${hasReceipts()?`<label class="toggle" for="set-receipts"><span><b>Чеки за
           <div class="grid2"><label class="f" for="set-break">Перерыв, мин<input class="inp" type="number" min="0" max="60" step="5" id="set-break" data-set="breakMin" value="${gapMin()}"></label><label class="f" for="set-step">Шаг подбора, мин<input class="inp" type="number" min="5" max="60" step="5" id="set-step" data-set="stepMin" value="${stepMin()}"></label></div></div>
         <div class="blockt"><h3>Длительность занятий</h3><p class="small muted">Подставляется в новые занятия и в подбор свободного времени. У отдельного занятия длительность можно поменять при создании.</p>
           <div class="durs">${Object.entries(TYPES).map(([k,v])=>{const n=durStale(k).length;return `<div class="hrow"><span class="chip t-${k}" style="flex:0 0 10.5em">${v.label}</span><input class="inp" type="number" min="10" max="240" step="5" data-dur="${k}" value="${durFor(k)}" aria-label="${v.label}, минут"><span class="small muted">мин</span>${n?`<button class="btn sm" data-act="dur-apply" data-type="${k}">Обновить ${n} ${plural(n,'будущее','будущих','будущих')}</button>`:''}</div>`}).join('')}</div></div>
-        <div class="row"><button class="btn" data-act="test-push">${ic('bell')}Проверить напоминание</button>${CLOUD?'<button class="btn ghost" data-act="logout">Выйти</button>':''}${SERVER.on?'':'<button class="btn ghost danger" data-act="reset">Сбросить демо-данные</button>'}</div>
+        <div class="row"><button class="btn" data-act="test-push">${ic('bell')}Проверить напоминание</button>${CLOUD?'<button class="btn ghost" data-act="logout">Выйти</button><button class="btn ghost" data-act="logout-all">Выйти на всех устройствах</button>':''}${SERVER.on?'':'<button class="btn ghost danger" data-act="reset">Сбросить демо-данные</button>'}</div>
         ${tgBlock()}
       </div>
       <div class="card"><div class="panel-h"><h2>Прайс-лист</h2><span class="small muted">₸ · цены можно править</span></div>
@@ -1223,7 +1225,12 @@ document.addEventListener('click',e=>{
   if(a==='tg-refresh'){tgRefresh();return}
   if(a==='tg-off'){if(!t.dataset.armed){t.dataset.armed='1';t.textContent='Нажмите ещё раз — отключить';return}
     BE.tg('disconnect').then(j=>{UI.tg=j;render();toast('Бот отключён','Напоминания в Telegram больше не придут')}).catch(e=>toast('Не получилось',esc(e.message)));return}
-  if(a==='tg-login'){tgLoginStart(t);return}
+  if(a==='google-login'){googleLogin(t);return}
+  if(a==='tg-link'){tgLinkStart(t);return}
+  if(a==='tg-unlink'){if(!t.dataset.armed){t.dataset.armed='1';t.textContent='Нажмите ещё раз — отключить';return}
+    BE.tg('unlink').then(j=>{UI.tg=j;render();toast('Telegram отключён','Напоминания туда больше не придут')}).catch(e=>toast('Не получилось',esc(e.message)));return}
+  if(a==='logout-all'){if(!t.dataset.armed){t.dataset.armed='1';t.textContent='Нажмите ещё раз — выйти везде';return}
+    sb?.auth.signOut({scope:'global'}).finally(()=>location.reload());return}
   if(a==='ob-clean'){S.settings.onboarded=true;persist();closeSheet();return}
   if(a==='ob-prices'||a==='ob-client'){S.settings.onboarded=true;persist();closeSheet();if(a==='ob-prices')return go('plan');go('clients');return newClientSheet()}
   if(a==='logout'){sb?.auth.signOut().finally(()=>location.reload());return}
@@ -1423,7 +1430,7 @@ async function api(method,url,body){
   const r=await fetch(url,{method,headers:method==='GET'?{}:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined,cache:'no-store'});
   if(!(r.headers.get('content-type')||'').includes('json')){const e=new Error('Сервер не отвечает');e.status=r.status;throw e}
   const j=await r.json();if(!r.ok){const e=new Error(j.error||('Ошибка '+r.status));e.status=r.status;e.body=j;throw e}return j}
-/* Cloud build (cloud/build.mjs) sets window.DOROZHKA_CLOUD: data in Supabase, login by email link. */
+/* Cloud build (cloud/build.mjs) sets window.DOROZHKA_CLOUD: data in Supabase, login with Google. */
 const CLOUD=window.DOROZHKA_CLOUD||null;let sb=null;
 const BE={
   async load(){if(CLOUD){const {data,error}=await sb.from('app_state').select('data,version').maybeSingle();if(error)throw new Error(error.message);return {version:data?.version||0,state:data?.data||null}}
@@ -1433,10 +1440,10 @@ const BE={
     const r=data[0];if(r.is_conflict){const e=new Error('conflict');e.status=409;e.body={version:r.new_version,state:r.current_data};throw e}return {version:r.new_version}},
   async tg(action,body){
     if(!CLOUD){const [m,u]={status:['GET','/api/telegram'],connect:['POST','/api/telegram'],test:['POST','/api/telegram/test'],disconnect:['DELETE','/api/telegram']}[action];return api(m,u,body)}
-    if(action!=='status'&&action!=='test')throw new Error('В облаке бот общий, подключать его не нужно');
+    if(!['status','test','link','unlink'].includes(action))throw new Error('В облаке бот общий, подключать его не нужно');
     const {data:{session}}=await sb.auth.getSession();
     const r=await fetch(`${CLOUD.url}/functions/v1/telegram/${action}`,{method:'POST',headers:{'content-type':'application/json',apikey:CLOUD.anonKey,authorization:'Bearer '+(session?.access_token||'')},body:JSON.stringify(body||{})});
-    const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||('Ошибка '+r.status));return j}
+    const j=await r.json().catch(()=>({}));if(!r.ok)throw Object.assign(new Error(j.error||('Ошибка '+r.status)),{status:r.status});return j}
 };
 // A new journal gets the same tariffs with empty prices: the coach writes in their own.
 const emptyState=()=>({v:3,clients:[],groups:[],sessions:[],payments:[],prices:PRICES.map(t=>({...t,one:null,p8:null,p10:null})),settings:{chargeNoShow:true,remindCoach:'2h',morningDigest:true}});
@@ -1455,18 +1462,27 @@ async function pushState(){clearTimeout(SERVER.timer);SERVER.timer=null;const se
       if(SERVER.merges===1)toast('Данные обновились','Изменения с другого устройства или из Telegram объединены с вашими')}
     else if(/too large/.test(e.message)){toast('Не удалось сохранить','Журнал стал слишком большим для облака. Удалите лишние фото чеков и попробуйте снова.',{sticky:true})}
     else{if(!SERVER.offline){SERVER.offline=true;toast('Нет связи с сервером','Изменения сохранятся, когда он снова заработает')}SERVER.timer=setTimeout(pushState,5000)}}}
-async function tgRefresh(){if(!SERVER.on)return;try{UI.tg=await BE.tg('status')}catch(e){UI.tg=null}
+async function tgRefresh(){if(!SERVER.on)return;
+  try{UI.tg=await BE.tg('status')}
+  catch(e){UI.tg=null;
+    // The account is gone: its journal was just moved into the old one (see merge_into_legacy). Sign in again.
+    if(CLOUD&&e.status===401){sb.auth.signOut().finally(()=>location.reload());return}}
   if(UI.view==='plan'&&!UI.openSheet&&!document.getElementById('tg-token')?.value)render();
-  if(UI.tg?.connected&&!UI.tg.chatLinked&&UI.view==='plan')setTimeout(tgRefresh,4000)}
+  if(!CLOUD&&UI.tg?.connected&&!UI.tg.chatLinked&&UI.view==='plan')setTimeout(tgRefresh,4000)}
 function tgBlock(){
   if(!SERVER.on)return '<p class="small muted">Напоминания работают, пока сервис открыт: уведомление со звуком за выбранное время и сводка дня в 7:00. Telegram подключается в локальной версии, которая хранит данные в базе на ноутбуке (папка server).</p>';
   const t=UI.tg;
   if(!t)return '<p class="small muted">Проверяю Telegram…</p>';
-  // Cloud: one shared bot for every coach; the chat was linked when the coach signed up.
-  if(CLOUD&&t.blocked)return `<div class="blockt"><h3>Telegram @${esc(t.botName)} <span class="chip lv-bad">бот заблокирован</span></h3><p class="small muted">Telegram не даёт боту писать вам, поэтому напоминания не приходят. Откройте бота, разблокируйте его и отправьте любое сообщение — напоминания возобновятся.</p><div class="row"><a class="btn primary" href="https://t.me/${esc(t.botName)}" target="_blank" rel="noopener">Открыть @${esc(t.botName)}</a><button class="btn ghost" data-act="tg-refresh">Проверить</button></div></div>`;
-  if(CLOUD)return t.chatLinked?`<div class="blockt"><h3>Telegram @${esc(t.botName)} <span class="chip lv-ok">работает</span></h3><p class="small muted">Напоминания, сводка дня и кнопки посещения приходят в ваш чат с ботом круглосуточно, даже когда сервис закрыт. Клиентам бот ничего не пишет. Команды: /today, /next${t.receipts?', /receipts':''}.</p>
-    <div class="row"><button class="btn" data-act="tg-test">Отправить тестовое сообщение</button><a class="btn ghost" href="https://t.me/${esc(t.botName)}" target="_blank" rel="noopener">Открыть @${esc(t.botName)}</a></div></div>`
-    :`<div class="blockt"><h3>Telegram @${esc(t.botName)}</h3><p class="small muted">Откройте бота и нажмите «Start», чтобы напоминания приходили вам.</p><div class="row"><a class="btn primary" href="https://t.me/${esc(t.botName)}" target="_blank" rel="noopener">Открыть @${esc(t.botName)}</a><button class="btn ghost" data-act="tg-refresh">Проверить</button></div></div>`;
+  // Cloud: one shared bot for every coach; the coach links their chat to the journal from here.
+  if(CLOUD&&t.chatLinked&&t.blocked)return `<div class="blockt"><h3>Telegram @${esc(t.botName)} <span class="chip lv-bad">бот заблокирован</span></h3><p class="small muted">Telegram не даёт боту писать вам, поэтому напоминания не приходят. Откройте бота, разблокируйте его и отправьте любое сообщение — напоминания возобновятся.</p><div class="row"><a class="btn primary" href="https://t.me/${esc(t.botName)}" target="_blank" rel="noopener">Открыть @${esc(t.botName)}</a><button class="btn ghost" data-act="tg-refresh">Проверить</button></div></div>`;
+  if(CLOUD&&t.chatLinked)return `<div class="blockt"><h3>Telegram @${esc(t.botName)} <span class="chip lv-ok">работает</span></h3><p class="small muted">Напоминания, сводка дня и кнопки посещения приходят в ваш чат с ботом круглосуточно, даже когда сервис закрыт. Клиентам бот ничего не пишет. Команды: /today, /next${t.receipts?', /receipts':''}.</p>
+    <div class="row"><button class="btn" data-act="tg-test">Отправить тестовое сообщение</button><a class="btn ghost" href="https://t.me/${esc(t.botName)}" target="_blank" rel="noopener">Открыть @${esc(t.botName)}</a><button class="btn ghost danger" data-act="tg-unlink">Отключить</button></div></div>`;
+  if(CLOUD&&UI.tgLink)return `<div class="blockt"><h3>Подключение Telegram</h3><p class="small muted">В чате с @${esc(UI.tgLink.bot)} нажмите «Start», затем «Да, подключить». Эта страница обновится сама.</p>
+    ${UI.tgLink.qr?.startsWith('<svg')?`<div style="align-self:flex-start;background:#fff;padding:8px;border-radius:10px;line-height:0">${UI.tgLink.qr}</div>
+    <p class="small muted" style="margin:0">На компьютере нет Telegram? Наведите камеру телефона на QR-код.</p>`:''}
+    <div class="row"><a class="btn primary" href="${esc(UI.tgLink.url)}" target="_blank" rel="noopener">Открыть @${esc(UI.tgLink.bot)}</a><button class="btn ghost" data-act="tg-link">Новая ссылка</button></div></div>`;
+  if(CLOUD)return `<div class="blockt"><h3>Напоминания в Telegram</h3><p class="small muted">Подключите Telegram: туда придут напоминания о занятиях, сводка дня и кнопки отметки. Входили раньше через Telegram? Подключите тот же аккаунт — бот предложит перенести ваш старый журнал.</p>
+    <div class="row"><button class="btn primary" data-act="tg-link">Подключить Telegram</button></div></div>`;
   // Laptop server: the coach connects their own bot by its token.
   if(!t.connected)return `<div class="blockt"><h3>Напоминания в Telegram</h3><p class="small muted">Откройте в Telegram @BotFather, отправьте /newbot и придумайте имя боту. Он пришлёт токен — вставьте его сюда. Токен хранится только в базе на этом ноутбуке.</p>
     <div class="row" style="flex-wrap:nowrap"><input class="inp mono" id="tg-token" type="password" autocomplete="off" placeholder="123456789:AA…" aria-label="Токен бота от BotFather"><button class="btn primary" data-act="tg-connect">Подключить</button></div></div>`;
@@ -1477,82 +1493,67 @@ function tgBlock(){
 }
 
 /* ---------- boot ---------- */
+const GOOGLE_G='<svg viewBox="0 0 48 48" width="18" height="18" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>';
 function renderLogin(msg){
   document.querySelector('.app').classList.add('auth');
-  document.querySelector('.side-foot').textContent='Журнал тренера по плаванию. Данные в облаке, вход через Telegram.';
+  document.querySelector('.side-foot').textContent='Журнал тренера по плаванию. Данные в облаке, вход через Google.';
   document.getElementById('main').innerHTML=`<div class="login card"><div class="rope"></div><div class="sect">
-    <h1>Дорожка</h1><p class="muted">Вход и регистрация через Telegram, без почты и паролей. Новый тренер? Бот предложит создать ваш личный журнал.</p>
-    <div class="blockt" id="lg-tg"><button class="btn primary" data-act="tg-login">Войти или создать журнал</button></div>
+    <h1>Дорожка</h1><p class="muted">Вход и регистрация одной кнопкой, без паролей. Новый тренер получает свой личный журнал.</p>
+    <div class="blockt"><button class="btn google" data-act="google-login">${GOOGLE_G}Войти через Google</button></div>
+    <p class="small muted">Входили раньше через Telegram? Войдите через Google и подключите тот же Telegram в настройках: бот перенесёт ваш журнал.</p>
     <p class="small muted" id="lg-msg" aria-live="polite">${msg||''}</p></div></div>`;
-  let pend=null;try{pend=JSON.parse(sessionStorage.getItem('dz-login')||'null')}catch(e){}
-  if(pend&&pend.until>Date.now())tgLoginWait(pend);
 }
-/* Bot login: the cloud function makes a one-time request, the coach confirms it in the bot,
-   and this page trades the approved request for a session. */
-const LOGIN={timer:null,busy:false,qr:null};
+// Google sends the coach back to this page; supabase-js trades the code in the address for a session (PKCE).
+function googleLogin(btn){btn.disabled=true;document.getElementById('lg-msg').textContent='Открываю Google…';
+  sb.auth.signInWithOAuth({provider:'google',options:{redirectTo:location.origin+location.pathname}})
+    .then(({error})=>{if(error){btn.disabled=false;document.getElementById('lg-msg').textContent='Не получилось: '+error.message}})}
+/* Telegram for a signed-in coach: the cloud function makes a one-time request, the app opens the bot with it,
+   and the coach confirms there that this chat belongs to their journal. */
+const LINK={qr:null,until:0,timer:null};
 function loadQR(){if(window.qrcode)return Promise.resolve();
-  return LOGIN.qr||(LOGIN.qr=new Promise((ok,no)=>{const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js';s.integrity='sha384-mZT2gIty7ZDdOGkxfP6joZcYdMW1Jvj9dRlfpTmaJAKKXTqzygtB22k7FLe+KZC1';s.crossOrigin='anonymous';s.onload=ok;s.onerror=()=>{LOGIN.qr=null;no(new Error('load'))};document.head.appendChild(s)}))}
-async function loginCall(step,body){
-  const r=await fetch(`${CLOUD.url}/functions/v1/telegram/login/${step}`,{method:'POST',headers:{'content-type':'application/json',apikey:CLOUD.anonKey},body:JSON.stringify(body||{})});
-  const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||('Ошибка '+r.status));return j}
-async function tgLoginStart(btn){
-  const msg=document.getElementById('lg-msg');btn.disabled=true;msg.textContent='Готовлю вход…';
-  try{const j=await loginCall('start');const p={nonce:j.nonce,code:j.code,bot:j.bot,until:Date.now()+j.ttl*1000};
-    try{sessionStorage.setItem('dz-login',JSON.stringify(p))}catch(e){}tgLoginWait(p)}
-  catch(e){btn.disabled=false;msg.textContent='Не получилось: '+e.message}}
-function tgLoginWait(p){
-  const box=document.getElementById('lg-tg');if(!box)return;
-  const link=`https://t.me/${p.bot}?start=login_${p.nonce}`,code=String(p.code).replace(/^(\d{3})(\d{3})$/,'$1 $2');
-  box.innerHTML=`<p style="margin:0">Код для входа:</p><b class="mono" style="font-size:2em;letter-spacing:.12em">${esc(code)}</b>
-    <p class="small" style="margin:0">Откройте Telegram на телефоне, зайдите в чат с <b>@${esc(p.bot)}</b> и отправьте ему этот код.</p>
-    <div id="lg-qr" hidden style="align-self:flex-start;background:#fff;padding:8px;border-radius:10px;line-height:0"></div>
-    <p class="small muted" id="lg-qr-t" hidden style="margin:0">Или наведите камеру телефона на QR-код и подтвердите в боте: «Да, войти» или, если вы здесь впервые, «Да, создать журнал».</p>
-    <div class="row"><a class="btn" href="${esc(link)}" target="_blank" rel="noopener">Открыть @${esc(p.bot)}</a><button class="btn ghost" data-act="tg-login">Новый код</button></div>`;
+  return LINK.qr||(LINK.qr=new Promise((ok,no)=>{const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js';s.integrity='sha384-mZT2gIty7ZDdOGkxfP6joZcYdMW1Jvj9dRlfpTmaJAKKXTqzygtB22k7FLe+KZC1';s.crossOrigin='anonymous';s.onload=ok;s.onerror=()=>{LINK.qr=null;no(new Error('load'))};document.head.appendChild(s)}))}
+async function tgLinkStart(btn){
+  // Opened right away, while the click still counts: a window opened after the request is blocked by Safari.
+  const w=window.open('','_blank');btn.disabled=true;
+  try{const j=await BE.tg('link');const url=`https://t.me/${j.bot}?start=link_${j.nonce}`;
+    UI.tgLink={url,bot:j.bot};LINK.until=Date.now()+j.ttl*1000;
+    if(w)w.location.href=url;render();tgLinkWait()}
+  catch(e){w?.close();btn.disabled=false;toast('Не получилось',esc(e.message))}}
+// While the request is fresh, ask every few seconds whether the bot has linked the chat.
+function tgLinkWait(){clearTimeout(LINK.timer);if(!UI.tgLink)return;
+  if(Date.now()>LINK.until||UI.tg?.chatLinked){const ok=UI.tg?.chatLinked;UI.tgLink=null;if(UI.view==='plan'&&!UI.openSheet)render();
+    if(ok)toast('Telegram подключён','Напоминания будут приходить в чат с ботом');return}
+  LINK.timer=setTimeout(async()=>{await tgRefresh();tgLinkWait()},3000);
   // A computer often has no Telegram app, so the link can't open there: offer a QR for the phone.
-  if(matchMedia('(min-width:700px)').matches)loadQR().then(()=>{const el=document.getElementById('lg-qr');if(!el)return;
-    const q=qrcode(0,'M');q.addData(link);q.make();el.innerHTML=q.createSvgTag({cellSize:4,margin:0});el.hidden=false;document.getElementById('lg-qr-t').hidden=false}).catch(()=>{});
-  document.getElementById('lg-msg').textContent='Жду подтверждения в Telegram…';
-  clearInterval(LOGIN.timer);LOGIN.timer=setInterval(()=>tgLoginPoll(p),2000);
-}
-async function tgLoginPoll(p){
-  if(LOGIN.busy)return;const msg=document.getElementById('lg-msg');
-  if(Date.now()>p.until){clearInterval(LOGIN.timer);try{sessionStorage.removeItem('dz-login')}catch(e){}
-    if(msg)msg.textContent='Время вышло. Нажмите «Новый код».';return}
-  LOGIN.busy=true;
-  try{const j=await loginCall('poll',{nonce:p.nonce});
-    if(j.status==='wait')return;
-    clearInterval(LOGIN.timer);try{sessionStorage.removeItem('dz-login')}catch(e){}
-    if(j.status!=='ok'){msg.textContent='Ссылка устарела. Нажмите «Новый код».';return}
-    msg.textContent='Вхожу…';
-    const {error}=await sb.auth.verifyOtp({token_hash:j.token_hash,type:'magiclink'});
-    if(error)throw error;location.reload()}
-  catch(e){if(msg)msg.textContent='Нет связи, пробую ещё раз…'}
-  finally{LOGIN.busy=false}}
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState!=='visible'||!CLOUD||!document.getElementById('lg-tg'))return;
-  let p=null;try{p=JSON.parse(sessionStorage.getItem('dz-login')||'null')}catch(e){}if(p)tgLoginPoll(p)});
+  const l=UI.tgLink;
+  if(!l.qr&&matchMedia('(min-width:700px)').matches){l.qr='…';loadQR().then(()=>{const q=qrcode(0,'M');q.addData(l.url);q.make();l.qr=q.createSvgTag({cellSize:4,margin:0});
+    if(UI.tgLink===l&&UI.view==='plan'&&!UI.openSheet)render()}).catch(()=>{})}}
 function onboardSheet(){
   openSheet(`${sheetHead('Добро пожаловать в Дорожку','Ваш журнал создан. Клиенты, расписание и оплаты видны только вам.')}<div class="sheet-b">
     <ol class="prose" style="margin:0;padding-left:1.2em;display:flex;flex-direction:column;gap:10px">
       <li><b>Впишите свои цены.</b> Тарифы уже есть, цены пустые. Можно добавить свои тарифы.</li>
       <li><b>Добавьте клиентов.</b> Имя, телефон и тариф. Абонемент и остаток считаются сами.</li>
-      <li><b>Telegram уже подключён.</b> Напоминания, сводка дня и кнопки отметки придут в чат с ботом.</li></ol>
+      <li><b>Подключите Telegram</b> в разделе «Ещё»: туда придут напоминания, сводка дня и кнопки отметки. Входили раньше через Telegram? Подключите тот же аккаунт, и бот перенесёт ваш старый журнал сюда.</li></ol>
     <details class="blockt small"><summary>Есть файл из версии на ноутбуке?</summary><p class="small muted">Выберите state-export.json — в нём клиенты, расписание, оплаты и прайс.</p>
       <label class="drop" for="ob-file"><span>${ic('payments')}</span><span><b style="color:var(--ink)">Выбрать файл</b><br>state-export.json</span></label><input type="file" id="ob-file" accept="application/json,.json" hidden></details>
   </div><div class="sheet-f"><button class="btn" data-act="ob-prices">Заполнить прайс</button><button class="btn primary" data-act="ob-client">Добавить клиента</button></div>`,'onboard');
 }
 async function boot(){
   if(CLOUD){
-    try{sb=window.supabase.createClient(CLOUD.url,CLOUD.anonKey)}catch(e){renderLogin('Не удалось подключиться к облаку. Проверьте интернет и обновите страницу.');return}
+    try{sb=window.supabase.createClient(CLOUD.url,CLOUD.anonKey,{auth:{flowType:'pkce'}})}catch(e){renderLogin('Не удалось подключиться к облаку. Проверьте интернет и обновите страницу.');return}
     const {data:{session}}=await sb.auth.getSession();
-    if(!session){renderLogin();sb.auth.onAuthStateChange((ev,s)=>{if(s)location.reload()});return}
+    // Back from Google: the code (or Google's refusal) leaves the address once it has been read.
+    const q=new URLSearchParams(location.search),err=q.get('error_description')||q.get('error');
+    if(q.has('code')||err)history.replaceState(null,'',location.pathname+location.hash);
+    if(!session){renderLogin(err?'Google не пустил: '+esc(err):'');sb.auth.onAuthStateChange((ev,s)=>{if(s)location.reload()});return}
     UI.uid=session.user.id;
-    // «Это не я — завершить все сеансы» in the bot revokes this session too: go back to the login screen.
+    // «Выйти на всех устройствах» on another device revokes this session too: go back to the login screen.
     sb.auth.onAuthStateChange(ev=>{if(ev==='SIGNED_OUT')location.reload()});
     try{const j=await BE.load();SERVER.on=true;SERVER.version=j.version;SERVER.base=structuredClone(j.state);
       if(j.state){S=j.state;if(!S.prices)S.prices=PRICES.map(t=>({...t}))}else S=emptyState();
       // An empty record (the first visit saves the time zone) still offers the import, until the coach starts clean.
       if(!S.clients.length&&!S.sessions.length&&!S.payments.length&&!S.settings?.onboarded)setTimeout(onboardSheet,300);
-      document.querySelector('.side-foot').textContent='Данные в облаке, вход через Telegram.';tgRefresh();
+      document.querySelector('.side-foot').textContent='Данные в облаке, вход через Google.';tgRefresh();
       // Photos still inside the journal (older data, an import, a photo taken offline) move to Storage.
       setTimeout(uploadPhotos,1500)}
     catch(e){renderLogin('Не получилось загрузить данные: '+esc(e.message)+'. Обновите страницу.');return}
