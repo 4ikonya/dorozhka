@@ -220,24 +220,31 @@ function receiptsSoFar(wnow) {
   return { from: dayKey(new Date(Date.UTC(y, m - back, RECEIPT_DAY))), to: dayKey(wnow) };
 }
 /**
+ * A receipt photo is either in Supabase Storage (p.imgPath, the cloud) or inline as a data URL (p.img: the laptop
+ * server, the demo, and old cloud data until the app moves it to Storage).
+ */
+const hasPhoto = (p) => !!p?.imgPath || /^data:image\/(jpeg|png|webp);base64,/.test(p?.img || '');
+/**
  * Every payment dated within [from, to]: a text list with the total, and the receipt photos (JPEG/PNG/WebP only;
- * payments without a photo are listed as «без фото»). Photos keep the list number in the caption.
+ * payments without a photo are listed as «без фото»). Photos keep the list number in the caption; each carries
+ * either `path` (Storage, the caller downloads it into `blob`) or `img` (data URL).
  * withOlder also sends photos of earlier payments that are still stored (never sent before, or a failed album).
  */
 function receiptsReport(S, from, to, withOlder = false) {
   const pays = (S.payments || []).filter((p) => p.date >= from && p.date <= to).sort((a, b) => a.date.localeCompare(b.date));
   const name = (id) => S.clients.find((c) => c.id === id)?.name || 'Без клиента';
   const head = `Чеки с ${shortDate(from)} по ${shortDate(to)}`;
-  const photo = (p) => /^data:image\/(jpeg|png|webp);base64,/.test(p.img || '');
+  const photo = hasPhoto;
+  const src = (p) => (p.imgPath ? { path: p.imgPath } : { img: p.img });
   const older = withOlder ? (S.payments || []).filter((p) => p.date < from && photo(p)).sort((a, b) => a.date.localeCompare(b.date)) : [];
-  const olderPhotos = older.map((p) => ({ id: p.id, img: p.img, caption: `Раньше · ${shortDate(p.date)} · ${name(p.clientId)}${p.with ? ` и ${name(p.with)}` : ''} · ${money(p.amount)} · ${p.method || '—'}` }));
+  const olderPhotos = older.map((p) => ({ id: p.id, ...src(p), caption: `Раньше · ${shortDate(p.date)} · ${name(p.clientId)}${p.with ? ` и ${name(p.with)}` : ''} · ${money(p.amount)} · ${p.method || '—'}` }));
   const olderLine = older.length ? `\n\nЕщё ${older.length} фото чеков за прошлые месяцы — тоже присылаю.` : '';
   if (!pays.length) return { text: `${head}\nОплат за этот период нет.${olderLine}`, photos: olderPhotos };
   const lines = pays.map((p, i) => `${i + 1}. ${shortDate(p.date)} · ${name(p.clientId)}${p.with ? ` и ${name(p.with)}` : ''} · ${money(p.amount)} · ${p.method || '—'} · ${p.sessions} зан.${photo(p) ? '' : ' · без фото'}`);
   const total = pays.reduce((t, p) => t + (+p.amount || 0), 0), withPhoto = pays.filter(photo).length;
   return {
     text: `${head}\nВсего ${pays.length} ${pays.length % 10 === 1 && pays.length % 100 !== 11 ? 'оплата' : [2, 3, 4].includes(pays.length % 10) && ![12, 13, 14].includes(pays.length % 100) ? 'оплаты' : 'оплат'} на ${money(total)}, фото чеков: ${withPhoto}\n\n${lines.join('\n')}${olderLine}`,
-    photos: [...olderPhotos, ...pays.map((p, i) => ({ p, i })).filter(({ p }) => photo(p)).map(({ p, i }) => ({ id: p.id, img: p.img, caption: lines[i] }))],
+    photos: [...olderPhotos, ...pays.map((p, i) => ({ p, i })).filter(({ p }) => photo(p)).map(({ p, i }) => ({ id: p.id, ...src(p), caption: lines[i] }))],
   };
 }
 /** Telegram limits: 4096 characters per message, 10 photos per album. */
@@ -250,16 +257,14 @@ function textChunks(text, max = 4000) {
   if (cur) out.push(cur);
   return out;
 }
-/** sendMediaGroup bodies (FormData, at most 10 photos each) with the payment ids they carry. */
+/** sendMediaGroup bodies (FormData, at most 10 photos each) with the payment ids they carry. A photo is a `blob` or an `img` data URL. */
 function photoForms(chatId, photos) {
   const forms = [];
   for (let i = 0; i < photos.length; i += 10) {
     const fd = new FormData(), media = [];
     photos.slice(i, i + 10).forEach((ph, j) => {
-      const [, type, b64] = ph.img.match(/^data:(image\/\w+);base64,(.*)$/);
-      const bin = atob(b64), bytes = new Uint8Array(bin.length);
-      for (let k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k);
-      fd.append(`f${j}`, new Blob([bytes], { type }), `receipt${i + j + 1}.${type.split('/')[1]}`);
+      const blob = ph.blob || dataUrlBlob(ph.img), type = blob.type || 'image/jpeg';
+      fd.append(`f${j}`, blob, `receipt${i + j + 1}.${type.split('/')[1]}`);
       media.push({ type: 'photo', media: `attach://f${j}`, caption: ph.caption.slice(0, 1000) });
     });
     fd.append('chat_id', String(chatId));
@@ -269,14 +274,39 @@ function photoForms(chatId, photos) {
   return forms;
 }
 
+function dataUrlBlob(url) {
+  const [, type, b64] = String(url).match(/^data:(image\/[\w+]+);base64,(.*)$/);
+  const bin = atob(b64), bytes = new Uint8Array(bin.length);
+  for (let k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k);
+  return new Blob([bytes], { type });
+}
+
 /**
  * After the monthly report the photos live in the Telegram chat, so the service drops them to keep the data small.
- * The payment itself stays; imgSentAt tells the app where the photo went. Returns how many photos were dropped.
+ * The payment itself stays; imgSentAt tells the app where the photo went. Returns how many photos were dropped;
+ * the caller deletes the Storage objects of the photos it sent.
  */
 function forgetPhotos(S, ids, day) {
   let n = 0;
-  for (const p of S.payments || []) if (ids.includes(p.id) && p.img) { p.img = null; p.imgSentAt = day; n++; }
+  for (const p of S.payments || []) if (ids.includes(p.id) && (p.img || p.imgPath)) { p.img = null; p.imgPath = null; p.imgSentAt = day; n++; }
   return n;
+}
+/** Receipt photos are kept for a year after the payment date. */
+const PHOTO_KEEP_DAYS = 365;
+/**
+ * Drops the photos of payments older than PHOTO_KEEP_DAYS on `today` (YYYY-MM-DD); imgExpiredAt tells the app why.
+ * Returns the Storage paths to delete (the caller deletes them after saving) and how many photos were dropped.
+ */
+function expirePhotos(S, today) {
+  const t = dateOf(today), cut = dayKey(new Date(t.getTime() - PHOTO_KEEP_DAYS * 864e5));
+  const paths = [];
+  let n = 0;
+  for (const p of S?.payments || []) {
+    if (!(p.img || p.imgPath) || !(p.date < cut)) continue;
+    if (p.imgPath) paths.push(p.imgPath);
+    p.img = null; p.imgPath = null; p.imgExpiredAt = today; n++;
+  }
+  return { n, paths };
 }
 
 /* ---------- merging after a version conflict ---------- */
@@ -394,7 +424,7 @@ function dueMessages(S, wnow, wasSent, opts = {}) {
 }
 
 globalThis.DorozhkaLogic = Object.freeze({
-  merge3, mergeStates,
+  merge3, mergeStates, hasPhoto, dataUrlBlob, expirePhotos, PHOTO_KEEP_DAYS,
   prevSession, prevNote, charged, balance, pausesOf, pauseAt,
   TYPE, LEAD, DEFAULT_TZ, wallNow, startOf, dayKey, durOf, titleOf, remaining, reminderText, dayText, nextText, startText, isPaused, activeClients, attendanceView, applyAttendance, syncMakeup, RECEIPT_DAY, receiptsPeriod, receiptsSoFar, receiptsReport, textChunks, photoForms, forgetPhotos, deviceOf, loginPlace, dueMessages,
 });

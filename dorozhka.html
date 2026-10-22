@@ -527,7 +527,7 @@ const REAL=()=>!!(CLOUD||SERVER.on);
 const hasReceipts=()=>CLOUD?!!UI.tg?.receipts:SERVER.on;
 // base: the state as the server last confirmed it, so a version conflict can merge instead of dropping the coach's edits.
 const SERVER={on:false,version:0,base:null,timer:null,dirty:false,offline:false,merges:0};
-const UI={tg:null,view:'today',week:0,selDay:null,cFilter:'all',cQuery:'',pQuery:'',period:'month',rType:'all',pendingImg:null,openSheet:null};
+const UI={uid:null,tg:null,view:'today',week:0,selDay:null,cFilter:'all',cQuery:'',pQuery:'',period:'month',rType:'all',pendingImg:null,openSheet:null};
 
 const client=id=>S.clients.find(c=>c.id===id);
 const group=id=>S.groups.find(g=>g.id===id);
@@ -647,7 +647,8 @@ function renderNav(){
   document.getElementById('top-title').textContent=VIEWS.find(v=>v[0]===UI.view)[1];
 }
 function render(){renderNav();document.getElementById('main').innerHTML=({today:vToday,schedule:vSchedule,clients:vClients,payments:vPayments,reports:vReports,plan:vPlan})[UI.view]();
-  if(UI.view==='schedule'){const w=document.querySelector('.wgrid-wrap');const n=document.querySelector('.nowline')||document.querySelector('.blk');if(w&&n)w.scrollTop=0}}
+  if(UI.view==='schedule'){const w=document.querySelector('.wgrid-wrap');const n=document.querySelector('.nowline')||document.querySelector('.blk');if(w&&n)w.scrollTop=0}
+  hydratePhotos()}
 function go(v){UI.view=v;try{history.replaceState(null,'','#'+v)}catch(e){}render();window.scrollTo(0,0);if(v==='plan')tgRefresh()}
 
 /* ---------- views ---------- */
@@ -770,7 +771,7 @@ function payList(){
     return !q||(c&&c.name.toLowerCase().includes(q))||(w&&w.name.toLowerCase().includes(q))||(qd.length>2&&digits(p.phone).includes(qd))});
   if(!list.length)return '<div class="empty">Чеков не нашли.</div>';
   return list.map(p=>{const c=client(p.clientId),w=client(p.with),t=tariff(p.tariff);return `<div class="prow">
-    <button class="thumb" data-act="view-receipt" data-id="${p.id}" aria-label="Открыть оплату">${p.img?`<img src="${esc(p.img)}" alt="">`:`<span class="small muted">${p.imgSentAt?'в Telegram':'без фото'}</span>`}</button>
+    <button class="thumb" data-act="view-receipt" data-id="${p.id}" aria-label="Открыть оплату">${hasPhoto(p)?photoTag(p,'',''):`<span class="small muted">${p.imgSentAt?'в Telegram':p.imgExpiredAt?'удалено':'без фото'}</span>`}</button>
     <div style="min-width:0"><button class="btn ghost" style="padding:0;font-weight:600;color:var(--ink);white-space:normal;text-align:left" data-act="open-client" data-id="${p.clientId}">${esc(c?.name||'Без клиента')}${w?` + ${esc(w.name.split(' ')[0])}`:''}</button><div class="small muted mono">${esc(p.phone)}</div></div>
     <div class="pmeta small muted">${t?esc(t.label):'Без тарифа'}<br>${fdateS(p.date)} · ${esc(p.method)} · ${p.sessions===1?'разовое':`${p.sessions} ${plural(p.sessions,'занятие','занятия','занятий')}`}${p.until?` · до ${fdateS(p.until)}`:''}</div>
     <div class="amt">${money(p.amount)}</div></div>`}).join('');
@@ -907,7 +908,7 @@ ${hasReceipts()?`<label class="toggle" for="set-receipts"><span><b>Чеки за
 /* ---------- sheets ---------- */
 function openSheet(html,key){const sh=document.getElementById('sheet');const keep=UI.openSheet===key?sh.querySelector('.sheet-b')?.scrollTop:0;
   sh.innerHTML=html;sh.hidden=false;document.getElementById('scrim').hidden=false;UI.openSheet=key;
-  const b=sh.querySelector('.sheet-b');if(b&&keep)b.scrollTop=keep;if(!keep)setTimeout(()=>sh.querySelector('[data-autofocus]')?.focus(),30)}
+  const b=sh.querySelector('.sheet-b');if(b&&keep)b.scrollTop=keep;if(!keep)setTimeout(()=>sh.querySelector('[data-autofocus]')?.focus(),30);hydratePhotos()}
 function closeSheet(){document.getElementById('sheet').hidden=true;document.getElementById('scrim').hidden=true;UI.openSheet=null;UI.pendingImg=null;render()}
 const sheetHead=(title,sub)=>`<div class="sheet-h"><div style="min-width:0"><h2 id="sheet-title">${title}</h2>${sub?`<div class="small muted" style="margin-top:4px">${sub}</div>`:''}</div><button class="btn icon-btn ghost" data-act="close" aria-label="Закрыть">${ic('x')}</button></div>`;
 
@@ -954,7 +955,7 @@ function clientSheet(id){
     <div class="blockt"><label class="f" for="c-note">Заметка о клиенте</label><textarea class="inp" id="c-note" data-cfield="note" data-cid="${id}" placeholder="Особенности, страхи, цели">${esc(c.note)}</textarea></div>
     ${notes.length?`<div class="blockt"><h3>Последние заметки тренера</h3>${notes.map(s=>`<div class="prev-note"><span class="eyebrow">${fdateS(s.date)}</span><span>${esc(s.log)}</span></div>`).join('')}</div>`:''}
     <div class="blockt"><h3>История</h3><ul class="hist">${hist.map(s=>{const a=s.att[id];return `<li><span class="mono small">${fdateS(s.date).replace(/ (\S{3})\S*/,' $1')} ${s.start}</span><span class="small" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${TYPES[s.type].label}</span><span class="chip ${a==='present'?'lv-ok':a==='absent'?'lv-bad':a==='excused'?'lv-warn':'st-unmarked'}">${a?ATT[a]:s.cancelled?'Отменено':'Не отмечено'}</span></li>`}).join('')||'<li class="muted">Занятий ещё не было</li>'}</ul></div>
-    <div class="blockt"><h3>Чеки</h3>${pays.some(p=>p.img)?`<div class="rthumbs">${pays.filter(p=>p.img).map(p=>`<button class="thumb" data-act="view-receipt" data-id="${p.id}" aria-label="Чек от ${fdateS(p.date)}" title="${fdateS(p.date)} · ${money(p.amount)}"><img src="${esc(p.img)}" alt=""></button>`).join('')}</div>`:'<p class="muted small">Чеков нет</p>'}</div>
+    <div class="blockt"><h3>Чеки</h3>${pays.some(hasPhoto)?`<div class="rthumbs">${pays.filter(hasPhoto).map(p=>`<button class="thumb" data-act="view-receipt" data-id="${p.id}" aria-label="Чек от ${fdateS(p.date)}" title="${fdateS(p.date)} · ${money(p.amount)}">${photoTag(p,'','')}</button>`).join('')}</div>`:'<p class="muted small">Чеков нет</p>'}</div>
   </div><div class="sheet-f"><button class="btn ghost danger" data-act="del-client" data-id="${id}">Удалить клиента</button><button class="btn primary" data-act="close">Готово</button></div>`,'c:'+id);
 }
 
@@ -1038,7 +1039,7 @@ function matchHTML(p,sel){
   return '';
 }
 function receiptSheet(id){const p=S.payments.find(x=>x.id===id);if(!p)return;const c=client(p.clientId),w=client(p.with),t=tariff(p.tariff);
-  openSheet(`${sheetHead('Чек · '+money(p.amount),`${esc(c?.name||'')}${w?' и '+esc(w.name):''} · <span class="mono">${esc(p.phone)}</span> · ${fdateS(p.date)} · ${esc(p.method)}`)}<div class="sheet-b">${p.img?`<img class="big-receipt" src="${esc(p.img)}" alt="Чек оплаты">`:p.imgSentAt?`<p class="muted">Фото чека отправлено вам в Telegram ${fdateS(p.imgSentAt)} в отчёте за месяц и удалено из сервиса, чтобы он не тяжелел.</p>`:'<p class="muted">Фото чека не прикреплено.</p>'}
+  openSheet(`${sheetHead('Чек · '+money(p.amount),`${esc(c?.name||'')}${w?' и '+esc(w.name):''} · <span class="mono">${esc(p.phone)}</span> · ${fdateS(p.date)} · ${esc(p.method)}`)}<div class="sheet-b">${hasPhoto(p)?photoTag(p,'big-receipt','Чек оплаты'):p.imgExpiredAt?`<p class="muted">Фото чека удалено ${fdateS(p.imgExpiredAt)}: фото чеков хранятся год после оплаты.</p>`:p.imgSentAt?`<p class="muted">Фото чека отправлено вам в Telegram ${fdateS(p.imgSentAt)} в отчёте за месяц и удалено из сервиса, чтобы он не тяжелел.</p>`:'<p class="muted">Фото чека не прикреплено.</p>'}
   <p class="small muted">${t?esc(t.label)+' · ':''}${p.sessions===1?'разовое занятие':`+${p.sessions} ${plural(p.sessions,'занятие','занятия','занятий')}${w?' каждому':''}`}${p.until?` · действует до ${fdateS(p.until)}`:''}</p></div>
   <div class="sheet-f"><button class="btn ghost danger" data-act="del-payment" data-id="${p.id}">Удалить чек</button><button class="btn" data-act="open-client" data-id="${p.clientId}">Карточка клиента</button></div>`,'r:'+id)}
 function groupSheet(id,type){
@@ -1254,11 +1255,11 @@ document.addEventListener('click',e=>{
   if(a==='del-session'||a==='del-client'||a==='del-payment'){
     if(!t.dataset.armed){t.dataset.armed='1';t.textContent='Нажмите ещё раз — удалить';return}
     if(a==='del-session')S.sessions=S.sessions.filter(x=>x.id!==t.dataset.id);
-    if(a==='del-client'){const id=t.dataset.id;S.clients=S.clients.filter(x=>x.id!==id);
+    if(a==='del-client'){const id=t.dataset.id;S.clients=S.clients.filter(x=>x.id!==id);dropPhotos(S.payments.filter(p=>p.clientId===id&&!p.with));
       S.payments.forEach(p=>{if(p.with===id)p.with=null;if(p.clientId===id&&p.with){p.clientId=p.with;p.with=null}});S.payments=S.payments.filter(p=>p.clientId!==id);
       S.groups.forEach(g=>g.clientIds=g.clientIds.filter(c=>c!==id));
       S.sessions.forEach(s=>{s.clientIds=s.clientIds.filter(c=>c!==id);delete s.att[id]});S.sessions=S.sessions.filter(s=>s.clientIds.length||s.groupId)}
-    if(a==='del-payment')S.payments=S.payments.filter(x=>x.id!==t.dataset.id);
+    if(a==='del-payment'){dropPhotos(S.payments.filter(x=>x.id===t.dataset.id));S.payments=S.payments.filter(x=>x.id!==t.dataset.id)}
     persist();closeSheet();toast('Удалено','');return}
   if(a==='pkg'){document.getElementById('np-sessions').value=+t.dataset.n;t.parentElement.querySelectorAll('.fchip').forEach(b=>b.setAttribute('aria-pressed',b===t));recalcAmount();return}
   if(a==='pick-phone'){const i=document.getElementById('np-phone');i.value=t.dataset.p;document.getElementById('np-match').innerHTML=matchHTML(i.value);applyPayClient();return}
@@ -1335,7 +1336,7 @@ document.addEventListener('change',e=>{
   if(t.name==='m'&&t.closest('#f-group')){const f=t.closest('form');    document.getElementById('ng-count').textContent=people(f.querySelectorAll('[name="m"]:checked').length)}
   if(t.id==='ob-file'&&t.files[0]){t.files[0].text().then(txt=>{const d=JSON.parse(txt);
       if(!Array.isArray(d.clients)||!Array.isArray(d.sessions)||!Array.isArray(d.payments))throw new Error('bad');
-      S=fromImport(d);persist();closeSheet();
+      S=fromImport(d);persist();closeSheet();uploadPhotos();
       toast('Данные перенесены',`${S.clients.length} ${plural(S.clients.length,'клиент','клиента','клиентов')}, ${S.payments.length} ${plural(S.payments.length,'оплата','оплаты','оплат')}`)})
     .catch(()=>toast('Не тот файл','Нужен state-export.json из версии на ноутбуке'));return}
   if(t.id==='np-file'&&t.files[0]){const f=t.files[0];const img=new Image();const url=URL.createObjectURL(f);
@@ -1384,10 +1385,37 @@ document.addEventListener('submit',e=>{
     if(w&&w===c.id){toast('Один и тот же клиент','Выберите другого второго участника');return}
     const pd=fd.get('date')||iso(new Date()),term=+fd.get('term');
     const p={id:uid('p'),clientId:c.id,with:w,tariff:t?.id||null,phone:c.phone,date:pd,amount:+fd.get('amount'),sessions:+fd.get('sessions'),method:fd.get('method'),until:term?iso(addDays(pdate(pd),term)):null};
-    p.img=UI.pendingImg||(SERVER.on?null:receiptSVG(p,c.parent?c.parent.split(',')[0]:c.name));S.payments.push(p);persist();
+    p.img=UI.pendingImg||(SERVER.on?null:receiptSVG(p,c.parent?c.parent.split(',')[0]:c.name));S.payments.push(p);persist();uploadPhotos();
     const cs=clientStats(c.id);UI.view='payments';closeSheet();toast('Оплата сохранена',`${esc(c.name)}${w?` и ${esc(client(w).name.split(' ')[0])}`:''}: теперь ${remLabel(cs)}`);return}
 });
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&UI.openSheet)closeSheet()});
+
+/* ---------- receipt photos ---------- */
+// In the cloud a photo is a file in the private Storage bucket «receipts» (p.imgPath = <coach>/<payment>.<ext>),
+// shown through a signed URL. A data URL in p.img (a photo not uploaded yet, older or imported data) is moved there
+// by uploadPhotos(). The laptop server and the demo keep data URLs. Photos are kept a year after the payment.
+const PHOTOS={urls:new Map(),busy:false};
+const hasPhoto=p=>!!(p?.imgPath||p?.img);
+const photoTag=(p,cls,alt)=>`<img${cls?` class="${cls}"`:''} ${p.imgPath?`data-rpath="${esc(p.imgPath)}"`:`src="${esc(p.img)}"`} alt="${esc(alt)}">`;
+async function hydratePhotos(){
+  if(!sb||!document.querySelector('img[data-rpath]:not([src])'))return;
+  const now=Date.now(),need=[...new Set([...document.querySelectorAll('img[data-rpath]:not([src])')].map(e=>e.dataset.rpath))].filter(x=>!(PHOTOS.urls.get(x)?.exp>now));
+  if(need.length){try{const {data}=await sb.storage.from('receipts').createSignedUrls(need,3600);
+    for(const r of data||[])if(r.signedUrl)PHOTOS.urls.set(r.path,{url:r.signedUrl,exp:now+50*60000})}catch(e){}}
+  document.querySelectorAll('img[data-rpath]:not([src])').forEach(e=>{const u=PHOTOS.urls.get(e.dataset.rpath);if(u)e.src=u.url})}
+async function uploadPhotos(){
+  if(!CLOUD||!SERVER.on||!UI.uid||PHOTOS.busy)return;PHOTOS.busy=true;
+  try{for(const id of S.payments.filter(p=>!p.imgPath&&L.hasPhoto(p)).map(p=>p.id)){
+      const p=S.payments.find(x=>x.id===id);if(!p||p.imgPath||!p.img)continue;
+      const blob=L.dataUrlBlob(p.img),path=`${UI.uid}/${p.id}.${blob.type==='image/jpeg'?'jpg':blob.type.split('/')[1]}`;
+      const {error}=await sb.storage.from('receipts').upload(path,blob,{upsert:true,contentType:blob.type});
+      if(error){console.warn('Фото чека не загрузилось:',error.message);break}
+      const q=S.payments.find(x=>x.id===id); // the payment may be deleted while uploading
+      if(!q){dropPhotos([{imgPath:path}]);continue}
+      q.imgPath=path;q.img=null;persist()}}
+  catch(e){console.warn('Фото чека не загрузилось:',e.message)}
+  finally{PHOTOS.busy=false}}
+function dropPhotos(pays){const paths=pays.map(p=>p.imgPath).filter(Boolean);if(sb&&paths.length)sb.storage.from('receipts').remove(paths).catch(()=>{})}
 
 /* ---------- local server (server/server.mjs): data in SQLite, Telegram reminders ---------- */
 async function api(method,url,body){
@@ -1517,13 +1545,16 @@ async function boot(){
     try{sb=window.supabase.createClient(CLOUD.url,CLOUD.anonKey)}catch(e){renderLogin('Не удалось подключиться к облаку. Проверьте интернет и обновите страницу.');return}
     const {data:{session}}=await sb.auth.getSession();
     if(!session){renderLogin();sb.auth.onAuthStateChange((ev,s)=>{if(s)location.reload()});return}
+    UI.uid=session.user.id;
     // «Это не я — завершить все сеансы» in the bot revokes this session too: go back to the login screen.
     sb.auth.onAuthStateChange(ev=>{if(ev==='SIGNED_OUT')location.reload()});
     try{const j=await BE.load();SERVER.on=true;SERVER.version=j.version;SERVER.base=structuredClone(j.state);
       if(j.state){S=j.state;if(!S.prices)S.prices=PRICES.map(t=>({...t}))}else S=emptyState();
       // An empty record (the first visit saves the time zone) still offers the import, until the coach starts clean.
       if(!S.clients.length&&!S.sessions.length&&!S.payments.length&&!S.settings?.onboarded)setTimeout(onboardSheet,300);
-      document.querySelector('.side-foot').textContent='Данные в облаке, вход через Telegram.';tgRefresh()}
+      document.querySelector('.side-foot').textContent='Данные в облаке, вход через Telegram.';tgRefresh();
+      // Photos still inside the journal (older data, an import, a photo taken offline) move to Storage.
+      setTimeout(uploadPhotos,1500)}
     catch(e){renderLogin('Не получилось загрузить данные: '+esc(e.message)+'. Обновите страницу.');return}
   }
   else if(/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)){

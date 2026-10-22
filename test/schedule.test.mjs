@@ -2,7 +2,7 @@
 // Times are wall-clock values in the coach's zone, kept in the UTC fields of a Date (as wallNow returns them).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyAttendance, balance, charged, deviceOf, merge3, mergeStates, dueMessages, loginPlace, receiptsPeriod, receiptsSoFar, remaining, syncMakeup, textChunks } from '../shared/schedule.mjs';
+import { applyAttendance, balance, charged, deviceOf, expirePhotos, forgetPhotos, hasPhoto, merge3, mergeStates, photoForms, receiptsReport, dueMessages, loginPlace, receiptsPeriod, receiptsSoFar, remaining, syncMakeup, textChunks } from '../shared/schedule.mjs';
 
 const at = (iso) => new Date(`${iso}Z`);
 let n = 0;
@@ -347,4 +347,39 @@ test('mergeStates: две отработки на одно занятие схл
   const out = mergeStates(base, local, remote);
   assert.equal(out.sessions.filter((x) => x.extOf === s.id).length, 1);
   assert.deepEqual(out.sessions.map((x) => x.date), [...out.sessions.map((x) => x.date)].sort());
+});
+
+/* ---------- receipt photos: Storage paths and data URLs ---------- */
+const JPEG = 'data:image/jpeg;base64,/9j/4AAQ';
+test('receiptsReport: фото из Storage и data URL, без фото — отмечено', () => {
+  const S = state({ payments: [pay({ id: 'p1', date: '2026-10-01', imgPath: 'u1/p1.jpg' }), pay({ id: 'p2', date: '2026-10-02', img: JPEG }), pay({ id: 'p3', date: '2026-10-03' })] });
+  const r = receiptsReport(S, '2026-09-20', '2026-10-19');
+  assert.match(r.text, /фото чеков: 2/);
+  assert.match(r.text, /3\. 3 октября .* · без фото/);
+  assert.deepEqual(r.photos.map((ph) => [ph.id, ph.path || null, ph.img || null]), [['p1', 'u1/p1.jpg', null], ['p2', null, JPEG]]);
+  assert.equal(hasPhoto({ img: 'data:image/svg+xml;base64,AAAA' }), false);
+});
+test('photoForms: принимает Blob и data URL', async () => {
+  const forms = photoForms(7, [{ id: 'p1', blob: new Blob([new Uint8Array([1, 2])], { type: 'image/png' }), caption: 'a' }, { id: 'p2', img: JPEG, caption: 'b' }]);
+  assert.equal(forms.length, 1);
+  assert.deepEqual(forms[0].ids, ['p1', 'p2']);
+  const fd = forms[0].fd;
+  assert.equal(fd.get('f0').type, 'image/png');
+  assert.equal(fd.get('f1').type, 'image/jpeg');
+  assert.equal(JSON.parse(fd.get('media')).length, 2);
+});
+test('forgetPhotos: убирает и data URL, и путь в Storage', () => {
+  const S = state({ payments: [pay({ id: 'p1', imgPath: 'u1/p1.jpg' }), pay({ id: 'p2', img: JPEG }), pay({ id: 'p3', img: JPEG })] });
+  assert.equal(forgetPhotos(S, ['p1', 'p2'], '2026-10-20'), 2);
+  assert.deepEqual(S.payments.map((p) => [p.img ?? null, p.imgPath ?? null, p.imgSentAt ?? null]),
+    [[null, null, '2026-10-20'], [null, null, '2026-10-20'], [JPEG, null, null]]);
+});
+test('expirePhotos: фото оплат старше года удаляются, остальные остаются', () => {
+  const S = state({ payments: [pay({ id: 'old', date: '2025-10-21', imgPath: 'u1/old.jpg' }), pay({ id: 'old2', date: '2025-09-01', img: JPEG }),
+    pay({ id: 'edge', date: '2025-10-22', imgPath: 'u1/edge.jpg' }), pay({ id: 'new', date: '2026-10-01', imgPath: 'u1/new.jpg' })] });
+  const r = expirePhotos(S, '2026-10-22');
+  assert.deepEqual(r, { n: 2, paths: ['u1/old.jpg'] });
+  assert.deepEqual(S.payments.map((p) => p.imgExpiredAt ?? null), ['2026-10-22', '2026-10-22', null, null]);
+  assert.equal(S.payments[2].imgPath, 'u1/edge.jpg');
+  assert.deepEqual(expirePhotos(S, '2026-10-22'), { n: 0, paths: [] });
 });

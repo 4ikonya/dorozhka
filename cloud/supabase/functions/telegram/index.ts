@@ -1,11 +1,12 @@
 // Telegram for «Дорожка» in the cloud. One function, four kinds of callers:
 //   POST /telegram/tick            — pg_cron every minute (x-cron-secret, checked by the database): sends due reminders
+//   POST /telegram/cleanup         — pg_cron daily (same secret): receipt photos older than a year are deleted
 //   POST /telegram/hook            — webhook of the shared bot (secret in X-Telegram-Bot-Api-Secret-Token; the old /hook/<secret> still works): sign-in and sign-up, attendance buttons, /today, /next, /receipts (owner only)
 //   POST /telegram/login/start|poll — the login screen: sign in (or create a journal) by confirming in the bot
 //   POST /telegram/status|test     — the signed-in coach from the app
 // Every coach has their own account and data; the bot tells them apart by their Telegram chat.
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
-import { applyAttendance, attendanceView, dayText, dueMessages, forgetPhotos, loginPlace, nextText, photoForms, receiptsReport, receiptsSoFar, startText, textChunks, wallNow } from '../_shared/schedule.mjs';
+import { applyAttendance, attendanceView, dayKey, dayText, dueMessages, expirePhotos, forgetPhotos, loginPlace, nextText, photoForms, receiptsReport, receiptsSoFar, startText, textChunks, wallNow } from '../_shared/schedule.mjs';
 
 const SB_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -44,15 +45,28 @@ async function tg(token: string, method: string, body: Record<string, unknown> =
 }
 // 403 from Telegram: the coach blocked the bot (or deleted the account). Retrying every minute won't help.
 const isBlocked = (e: unknown) => (e as { code?: number }).code === 403;
+// Receipt photos live in a private Storage bucket, under <owner>/<payment id>.<ext>.
+const RECEIPTS = 'receipts';
+type Photo = { id: string; img?: string; path?: string; blob?: Blob; caption: string };
+// Storage photos are downloaded first; one that can't be read is logged and left out of the album.
+async function withBlobs(photos: Photo[]) {
+  const out: Photo[] = [];
+  for (const ph of photos) {
+    if (!ph.path) { out.push(ph); continue; }
+    const { data, error } = await admin.storage.from(RECEIPTS).download(ph.path);
+    if (data) out.push({ ...ph, blob: data }); else console.error(`telegram receipt ${ph.path}: ${error?.message}`);
+  }
+  return out;
+}
 // Long text in parts, then receipt photos as albums of up to 10. A failed album is logged, the rest still go out.
-// Returns the ids of payments whose photo reached the chat.
-async function sendReport(token: string, chatId: number, m: { text: string; photos?: { id: string; img: string; caption: string }[] }) {
+// Returns the photos that reached the chat.
+async function sendReport(token: string, chatId: number, m: { text: string; photos?: Photo[] }) {
   for (const part of textChunks(m.text)) await tg(token, 'sendMessage', { chat_id: chatId, text: part });
-  const sent: string[] = [];
-  for (const { fd, ids } of photoForms(chatId, m.photos || [])) {
+  const photos = await withBlobs(m.photos || []), sent: Photo[] = [];
+  for (const { fd, ids } of photoForms(chatId, photos)) {
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMediaGroup`, { method: 'POST', body: fd });
     const out = await res.json().catch(() => ({ ok: false, description: 'Telegram ответил непонятно' }));
-    if (out.ok) sent.push(...ids); else console.error(`telegram receipts album: ${out.description}`);
+    if (out.ok) sent.push(...photos.filter((ph) => ids.includes(ph.id))); else console.error(`telegram receipts album: ${out.description}`);
   }
   return sent;
 }
@@ -63,14 +77,39 @@ async function saveState(owner: string, version: number, data: unknown) {
   if (error) throw new Error(error.message);
   return !r?.[0]?.is_conflict;
 }
-// Drops photos that are now in the chat. Retried if the app saved meanwhile.
-async function dropSentPhotos(owner: string, ids: string[], day: string) {
+// Drops photos that are now in the chat: from the journal (retried if the app saved meanwhile), then from Storage.
+async function dropSentPhotos(owner: string, sent: Photo[], day: string) {
+  const ids = sent.map((ph) => ph.id), paths = sent.flatMap((ph) => (ph.path ? [ph.path] : []));
   for (let i = 0; i < 5 && ids.length; i++) {
     const { data: row } = await admin.from('app_state').select('data, version').eq('owner', owner).maybeSingle();
     if (!row?.data || !forgetPhotos(row.data, ids, day)) return;
-    if (await saveState(owner, row.version, row.data)) return;
+    if (await saveState(owner, row.version, row.data)) return removePhotos(paths);
   }
   console.error('telegram receipts: photos sent but not removed (state kept changing)');
+}
+async function removePhotos(paths: string[]) {
+  for (let i = 0; i < paths.length; i += 100) {
+    const { error } = await admin.storage.from(RECEIPTS).remove(paths.slice(i, i + 100));
+    if (error) console.error(`telegram receipts remove: ${error.message}`);
+  }
+}
+// Daily (pg_cron → /cleanup): receipt photos are kept a year after the payment, then dropped from every journal and Storage.
+async function cleanup() {
+  const { data: rows, error } = await admin.from('app_state').select('owner');
+  if (error) throw new Error(error.message);
+  let photos = 0, failed = 0;
+  for (const { owner } of rows ?? []) {
+    try {
+      for (let i = 0; i < 5; i++) {
+        const { data: row } = await admin.from('app_state').select('data, version').eq('owner', owner).maybeSingle();
+        if (!row?.data) break;
+        const { n, paths } = expirePhotos(row.data, dayKey(nowFor(row.data)));
+        if (!n) break;
+        if (await saveState(owner, row.version, row.data)) { await removePhotos(paths); photos += n; break; }
+      }
+    } catch (e) { failed++; console.error(`telegram cleanup ${String(owner).slice(0, 8)}: ${(e as Error).message}`); }
+  }
+  return { ok: true, photos, failed };
 }
 async function stateOf(owner: string) {
   const { data } = await admin.from('app_state').select('data').eq('owner', owner).maybeSingle();
@@ -107,8 +146,8 @@ async function tickCoach(bot: Bot, l: Coach) {
     if (error) continue;
     try {
       if (m.photos) {
-        const ids = await sendReport(bot.token, l.chat_id as number, m);
-        if (m.purge) await dropSentPhotos(l.owner, ids, m.key.slice(9) + '-20');
+        const sentPhotos = await sendReport(bot.token, l.chat_id as number, m);
+        if (m.purge) await dropSentPhotos(l.owner, sentPhotos, m.key.slice(9) + '-20');
       }
       else await tg(bot.token, 'sendMessage', { chat_id: l.chat_id, text: m.text, ...(m.reply_markup ? { reply_markup: m.reply_markup } : {}) });
       sent++;
@@ -316,10 +355,10 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: cors });
   const path = new URL(req.url).pathname.replace(/^.*?\/telegram/, '');
   try {
-    if (path === '/tick') {
+    if (path === '/tick' || path === '/cleanup') {
       const { data: ok } = await admin.rpc('check_cron_secret', { candidate: req.headers.get('x-cron-secret') ?? '' });
       if (ok !== true) return json({ error: 'forbidden' }, 403);
-      return json(await tick());
+      return json(path === '/tick' ? await tick() : await cleanup());
     }
     // The secret comes in Telegram's X-Telegram-Bot-Api-Secret-Token header (setWebhook secret_token).
     // The old webhook URL with the secret in the path keeps working until setWebhook is called again.

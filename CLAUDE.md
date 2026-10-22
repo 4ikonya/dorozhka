@@ -10,10 +10,11 @@
   - **локальный сервер** (`server/server.mjs`, порт 4318): SQLite в `data/`;
   - **демо** (файл открыт напрямую): `localStorage` и `seed()`.
 - Всё состояние — один JSON-документ `S` (`clients`, `groups`, `sessions`, `payments`, `prices`, `settings`, `vacations`). Изменения сохраняются через `persist()`, после чего вызывается `render()` или открывается нужный лист. В облаке документ лежит в таблице `app_state`, а сохранение проверяет версию через RPC `save_state`.
+- Фото чеков: в облаке файл в приватном бакете Storage `receipts` (`p.imgPath` = `<owner>/<payment>.<ext>`, показ через signed URL, `hydratePhotos()`); data URL в `p.img` облачное приложение само переносит туда (`uploadPhotos()`). Локальный сервер и демо хранят data URL. Фото хранятся год после оплаты (`expirePhotos`, `/telegram/cleanup` раз в сутки).
 - `shared/logic.js` — единственная копия бизнес-логики: правила учёта (`charged`, `balance`/`remaining`, `syncMakeup`, паузы), напоминания (`dueMessages`, `wallNow`, `durOf`), кнопки посещения. Это обычный скрипт (кладёт всё в `globalThis.DorozhkaLogic`), чтобы страница работала и при открытии файла напрямую. Страница подключает его тегом `<script src="shared/logic.js">`; `cloud/build.mjs` и `page()` в `server.mjs` встраивают его в страницу. Node и Deno импортируют его через `shared/schedule.mjs`; `cloud/build.mjs` копирует оба файла в `cloud/supabase/functions/_shared/`. Новую экспортируемую функцию добавляйте в список в конце `logic.js` и в `schedule.mjs`.
 - Бот один на всех: токен и секрет webhook лежат в `public.bot`, а `telegram_links` хранит пары «аккаунт тренера ↔ его чат с ботом». Незнакомому чату бот предлагает «Да, создать журнал»: функция создаёт пользователя `tg<chat>@users.dorozhka.example` (почта внутренняя, писем нет). Новый журнал получает тарифы с пустыми ценами (`emptyState`).
 - `cloud/supabase/functions/telegram/index.ts` — edge-функция на Deno. Маршруты:
-  - `/tick` — cron;
+  - `/tick` — cron каждую минуту, `/cleanup` — cron раз в сутки (фото чеков старше года);
   - `/hook` — webhook бота, секрет в заголовке `X-Telegram-Bot-Api-Secret-Token` (старый путь `/hook/<secret>` пока работает);
   - `/login/start`, `/login/poll` — вход через бота;
   - `/status`, `/test` (свой токен бота больше не подключают).

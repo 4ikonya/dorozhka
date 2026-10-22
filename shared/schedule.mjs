@@ -2,7 +2,7 @@
 import './logic.js';
 
 export const {
-  merge3, mergeStates,
+  merge3, mergeStates, hasPhoto, dataUrlBlob, expirePhotos, PHOTO_KEEP_DAYS,
   prevSession, prevNote, charged, balance, pausesOf, pauseAt,
   TYPE, LEAD, DEFAULT_TZ, wallNow, startOf, dayKey, durOf, titleOf, remaining, reminderText, dayText, nextText, startText, isPaused, activeClients, attendanceView, applyAttendance, syncMakeup, RECEIPT_DAY, receiptsPeriod, receiptsSoFar, receiptsReport, textChunks, photoForms, forgetPhotos, deviceOf, loginPlace, dueMessages,
 } = globalThis.DorozhkaLogic;

@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { DEFAULT_TZ, applyAttendance, attendanceView, dueMessages, dayText, forgetPhotos, nextText, photoForms, receiptsReport, receiptsSoFar, startText, textChunks, wallNow } from '../shared/schedule.mjs';
+import { DEFAULT_TZ, applyAttendance, attendanceView, dayKey as wallDay, dueMessages, dayText, expirePhotos, forgetPhotos, nextText, photoForms, receiptsReport, receiptsSoFar, startText, textChunks, wallNow } from '../shared/schedule.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT) || 4318;
@@ -97,6 +97,9 @@ function cleanSent() {
   cleanedAt = Date.now();
   const ago = (days) => new Date(Date.now() - days * 864e5).toISOString();
   db.prepare("DELETE FROM sent WHERE (key NOT LIKE 'receipts:%' AND at < ?) OR at < ?").run(ago(3), ago(400));
+  // Receipt photos are kept a year after the payment, as in the cloud.
+  const { version, state } = readState();
+  if (state && expirePhotos(state, wallDay(wnow(state))).n) writeState(state, version);
 }
 async function tick() {
   cleanSent();
